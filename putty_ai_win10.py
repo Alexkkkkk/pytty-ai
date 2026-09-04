@@ -15,9 +15,11 @@ PuTTY-AI — SSH-клиент с ИИ-помощником.
 
 import sys
 import os
+import ast
 import json
 import time
 import socket
+import shutil
 import datetime
 import importlib.util
 import urllib.request
@@ -31,10 +33,13 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
     QLabel, QPlainTextEdit, QTextEdit, QToolBar, QDockWidget, QMessageBox,
-    QFileDialog, QGroupBox
+    QFileDialog, QGroupBox, QListWidget, QListWidgetItem
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QAction, QFont, QIcon, QTextCursor, QGuiApplication, QColor
+from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import (
+    QAction, QFont, QIcon, QKeySequence, QShortcut, QDesktopServices,
+    QTextCursor, QGuiApplication, QColor
+)
 
 
 def _load_json(path, default):
@@ -83,6 +88,8 @@ LAZY_LADDER = (
     "добавления нового.\n"
     "НИКОГДА не экономь на безопасности: стирание флеш (mmc erase и т.п.) "
     "программа заблокирует — не пытайся обойти.\n"
+    "ПОСЛЕ КАЖДОГО ФИКСА — ПРОВЕРКА (как lint после правки): одна короткая "
+    "команда-доказательство, что проблема исчезла. Подтверждено → DONE.\n"
     "После каждой команды оцени: проблема решена? → сразу DONE, не делай "
     "лишних шагов.")
 
@@ -351,28 +358,44 @@ class AiWorker(QThread):
         self.settings = settings
         self.messages = messages
 
+    def _attempt(self, base_url, api_key, model):
+        payload = {"model": model, "messages": self.messages,
+                   "temperature": 0.2, "stream": False}
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = "Bearer " + api_key
+        req = urllib.request.Request(
+            base_url.rstrip("/") + "/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers)
+        with urllib.request.urlopen(req, timeout=90) as r:
+            resp = json.loads(r.read().decode("utf-8"))
+        return resp["choices"][0]["message"]["content"].strip()
+
     def run(self):
-        try:
-            payload = {
-                "model": self.settings["model"],
-                "messages": self.messages,
-                "temperature": 0.2,
-                "stream": False,
-            }
-            headers = {"Content-Type": "application/json"}
-            if self.settings.get("api_key"):
-                headers["Authorization"] = \
-                    "Bearer " + self.settings["api_key"]
-            req = urllib.request.Request(
-                self.settings["base_url"].rstrip("/") + "/chat/completions",
-                data=json.dumps(payload).encode("utf-8"),
-                headers=headers)
-            with urllib.request.urlopen(req, timeout=90) as r:
-                resp = json.loads(r.read().decode("utf-8"))
-            text = resp["choices"][0]["message"]["content"].strip()
-            self.result.emit(text)
-        except Exception as ex:
-            self.failed.emit(str(ex))
+        # 3 попытки с нарастающей паузой + опциональный запасной провайдер
+        delays = (0, 2, 5)
+        last_err = ""
+        for i in range(3):
+            if i:
+                self.msleep(int(delays[i] * 1000))
+            try:
+                self.result.emit(self._attempt(self.settings["base_url"],
+                                               self.settings.get("api_key"),
+                                               self.settings["model"]))
+                return
+            except Exception as ex:
+                last_err = str(ex)
+        fb_url = self.settings.get("base_url2")
+        if fb_url:
+            try:
+                self.result.emit(self._attempt(
+                    fb_url, self.settings.get("api_key2"),
+                    self.settings.get("model2") or self.settings["model"]))
+                return
+            except Exception as ex:
+                last_err = str(ex)
+        self.failed.emit(last_err)
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +516,13 @@ class AiSettingsDialog(QDialog):
         lay.addRow("API URL:", self.base)
         lay.addRow("API-ключ:", self.key)
         lay.addRow("Модель:", self.model)
+        self.base2 = QLineEdit(settings.get("base_url2", ""))
+        self.key2 = QLineEdit(settings.get("api_key2", ""))
+        self.key2.setEchoMode(QLineEdit.EchoMode.Password)
+        self.model2 = QLineEdit(settings.get("model2", ""))
+        lay.addRow("Запасной URL:", self.base2)
+        lay.addRow("Запасной ключ:", self.key2)
+        lay.addRow("Запасная модель:", self.model2)
         lay.addRow(QLabel(
             "Ollama (Win10+): http://localhost:11434/v1, ключ пустой.\n"
             "Groq: ключ с https://console.groq.com/keys (регистрация бесплатно).\n"
@@ -550,6 +580,17 @@ class MainWindow(QMainWindow):
         self._last_skill_check = 0.0
         self._last_hook_msg = ""
         self._load_user_patches()
+
+        # --- умное ожидание (expect), верификатор, рефлексия, лог сессии ---
+        self._expecting = False
+        self._expect_deadline = 0.0
+        self._wait_count = 0
+        self._cmd_counts = {}
+        self._verifying = False
+        self._reflect_used = 0
+        self._session_log = None
+        self._start_session_log()
+        QTimer.singleShot(2000, self._check_update)
         # --- база знаний по U-Boot (файл u_boot_errors_kb.md рядом с программой) ---
         self.kb_text = self._load_kb()
 
@@ -766,18 +807,61 @@ class MainWindow(QMainWindow):
 
     # ---------- Самообучение: навыки, правила, самопереписывание ----------
     def _load_user_patches(self):
-        """Загружает user_patches.py — код, который ИИ написал сам себе."""
+        """Загружает user_patches.py с валидацией (паттерн mue-x):
+        ast.parse, только безопасные конструкции верхнего уровня,
+        бэкап перед применением, откат при поломке."""
+        path = os.path.join(self._base_dir, "user_patches.py")
+        bak = os.path.join(self._base_dir, "user_patches.bak")
         try:
-            path = os.path.join(self._base_dir, "user_patches.py")
-            spec = importlib.util.spec_from_file_location("user_patches",
-                                                          path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            hook = getattr(mod, "on_output", None)
+            with open(path, encoding="utf-8") as f:
+                source = f.read()
+        except OSError:
+            return
+        tree = None
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            pass
+        if tree is not None:
+            for node in tree.body:
+                if isinstance(node, ast.Expr) and \
+                        isinstance(node.value, ast.Constant):
+                    continue  # docstring
+                if not isinstance(node, (ast.Import, ast.ImportFrom,
+                                         ast.FunctionDef, ast.ClassDef,
+                                         ast.Assign)):
+                    tree = None  # опасная конструкция верхнего уровня
+                    break
+        if tree is None:
+            # откат из бэкапа
+            try:
+                with open(bak, encoding="utf-8") as f:
+                    source = f.read()
+                tree = ast.parse(source)
+                shutil.copyfile(bak, path)
+                self.ai_output.appendPlainText(
+                    "[user_patches: обнаружена ошибка — выполнен откат "
+                    "из бэкапа]\n")
+            except (OSError, SyntaxError):
+                self.ai_output.appendPlainText(
+                    "[user_patches: ошибка в коде, бэкап не найден — "
+                    "хук отключён]\n")
+                return
+        try:
+            shutil.copyfile(path, bak)  # свежий бэкап рабочей версии
+        except OSError:
+            pass
+        try:
+            mod = ast.Module(body=tree.body, type_ignores=[])
+            g = {"__name__": "user_patches"}
+            exec(compile(mod, path, "exec"), g)
+            hook = g.get("on_output")
             if callable(hook):
                 self._output_hook = hook
-        except Exception:
+        except Exception as ex:
             self._output_hook = None
+            self.ai_output.appendPlainText(
+                "[user_patches: сбой загрузки (%s) — хук отключён]\n" % ex)
 
     def _safety(self, cmd):
         """Базовые правила + правила, выученные программой самостоятельно."""
@@ -792,9 +876,21 @@ class MainWindow(QMainWindow):
                     return "risky", p
         return level, pat
 
+    @staticmethod
+    def _skill_score(skill, out):
+        """Доля строк триггера, найденных в выводе (0.0–1.0)."""
+        trig = str(skill.get("trigger", "")).strip()
+        lines = [l.strip() for l in trig.splitlines() if l.strip()]
+        if len(trig) < 8 or not lines:
+            return 0.0
+        hits = sum(1 for l in lines if l in out)
+        return hits / float(len(lines))
+
     def _on_term_output(self, text):
         """Вывод терминала: показать + хук самопереписанного кода + навыки."""
         self.term.insert_remote(text)
+        self._log_io("OUT", text)
+        self._maybe_expect_done()
         if self._output_hook:
             try:
                 msg = self._output_hook(self.term.last_output(60))
@@ -811,8 +907,9 @@ class MainWindow(QMainWindow):
         out = self.term.last_output(60)
         for s in self.skills:
             trig = str(s.get("trigger", "")).strip()
-            if len(trig) >= 8 and trig in out and trig not in self._announced:
-                self._announced.add(trig)
+            key = trig.splitlines()[0][:60] if trig else ""
+            if self._skill_score(s, out) >= 0.5 and key not in self._announced:
+                self._announced.add(key)
                 self._matched_skill = s
                 s["hits"] = int(s.get("hits", 0)) + 1
                 _save_json(os.path.join(self._base_dir, "skills.json"),
@@ -898,6 +995,21 @@ class MainWindow(QMainWindow):
         data["hits"] = 0
         data.setdefault("platform", "uboot")
         data.setdefault("note", trig[:120])
+        # mem0-паттерн: похожий навык уже есть? → обновить, а не дублировать
+        first_line = trig.splitlines()[0][:60] if trig else ""
+        for old in self.skills:
+            if first_line and first_line in str(old.get("trigger", "")):
+                old["solution"] = sol
+                old["note"] = data.get("note", old.get("note", ""))
+                old["hits"] = int(old.get("hits", 0)) + 1
+                old["dangerous"] = bool(data.get("dangerous"))
+                _save_json(os.path.join(self._base_dir, "skills.json"),
+                           self.skills)
+                self.kb_text = self._load_kb()
+                self.skill_status.setText("навыков: %d" % len(self.skills))
+                self.ai_output.appendPlainText(
+                    "🧠 Навык обновлён (без дубля): %s\n" % old.get("note"))
+                return
         self.skills.append(data)
         _save_json(os.path.join(self._base_dir, "skills.json"), self.skills)
         rule_note = ""
@@ -911,6 +1023,252 @@ class MainWindow(QMainWindow):
         self.skill_status.setText("навыков: %d" % len(self.skills))
         self.ai_output.appendPlainText("🧠 Выучен новый навык: %s%s\n"
                                        % (data["note"], rule_note))
+
+    # ---------- Сессионный лог (запись всего обмена) ----------
+    def _start_session_log(self):
+        try:
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(self._base_dir,
+                                "session_%s.log" % stamp)
+            self._session_log = open(path, "a", encoding="utf-8")
+        except OSError:
+            self._session_log = None
+
+    def _log_io(self, direction, text):
+        if self._session_log:
+            try:
+                stamp = datetime.datetime.now().strftime("%H:%M:%S")
+                self._session_log.write("[%s %s] %s\n"
+                                        % (stamp, direction, text))
+                self._session_log.flush()
+            except OSError:
+                self._session_log = None
+
+    # ---------- Умное ожидание (expect-паттерн) ----------
+    PROMPT_PATTERNS = (">>#", ">> #", "/ #", "# ", "$ ")
+
+    def _start_expect_wait(self):
+        """После команды ждём возврата приглашения консоли, не фикс. паузу."""
+        self._expecting = True
+        delay = self.agent_delay_spin.value()
+        self._expect_deadline = time.time() + max(30, delay * 6)
+        self._expect_poll()
+
+    def _expect_poll(self):
+        """Проверка дедлайна (промпт ловится в _on_term_output)."""
+        if not self._expecting:
+            return
+        if time.time() >= self._expect_deadline:
+            self._expecting = False
+            self._agent_observe()
+        else:
+            QTimer.singleShot(500, self._expect_poll)
+
+    def _maybe_expect_done(self):
+        if not self._expecting:
+            return
+        tail = self.term.last_output(3).rstrip()
+        for pat in self.PROMPT_PATTERNS:
+            if tail.endswith(pat):
+                self._expecting = False
+                self._agent_observe()
+                return
+
+    # ---------- Верификатор результата (OpenHands-паттерн) ----------
+    def _verify_result(self):
+        """После DONE: независимая оценка 1–10. <7 → продолжаем исправлять."""
+        self._verifying = True
+        sys = ("Ты — независимый верификатор. Оцени вывод терминала: "
+               "действительно ли решена исходная проблема? Ответь СТРОГО в "
+               "формате: число от 1 до 10, пробел, одна короткая фраза "
+               "причины. Пример: «9 Ошибок нет, устройство загрузилось».")
+        out = self.term.last_output(100)
+        self.worker = AiWorker(self.settings,
+                               [{"role": "system", "content": sys},
+                                {"role": "user", "content": out}])
+        self.worker.result.connect(self._verify_got)
+        self.worker.failed.connect(self._verify_fail)
+        self.worker.start()
+
+    def _verify_fail(self, err):
+        self._verifying = False
+        self.ai_output.appendPlainText("[верификатор недоступен: %s]\n" % err)
+        self._agent_finish("верификатор недоступен, остановлено")
+
+    def _verify_got(self, text):
+        self._verifying = False
+        token = (text.split() or ["0"])[0]
+        try:
+            score = int("".join(ch for ch in token if ch.isdigit()) or "0")
+        except ValueError:
+            score = 0
+        reason = " ".join(text.split()[1:])[:120]
+        self.ai_output.appendPlainText("✔ Верификатор: %d/10 — %s\n"
+                                       % (score, reason))
+        if score >= 7:
+            self._agent_finish("подтверждено верификатором (%d/10)" % score)
+        else:
+            self._agent_history.append(
+                {"role": "user", "content":
+                    "Верификатор дал %d/10 (%s). Проблема НЕ решена — "
+                    "продолжай исправление другим способом."
+                    % (score, reason)})
+            self._reflect_used = 0
+            self._agent_request()
+
+    # ---------- Рефлексия (Reflexion-паттерн) ----------
+    def _reflect_and_retry(self, why):
+        """Агент застрял: разбор ошибки + повторная попытка с уроком."""
+        if self._reflect_used >= 2:
+            self._agent_finish("застрял: %s (рефлексия исчерпана)" % why)
+            return
+        self._reflect_used += 1
+        sys = ("Ты — механизм самокритики агента. Агент застрял: %s. "
+               "Проанализируй историю и выпиши короткий урок: что пошло не "
+               "так и какой НОВЫЙ подход попробовать. Ответь одним абзацем, "
+               "без команд." % why)
+        hist = "\n".join(
+            m.get("content", "") if isinstance(m.get("content"), str)
+            else str(m.get("content")) for m in self._agent_history[-12:])
+        self.worker = AiWorker(self.settings,
+                               [{"role": "system", "content": sys},
+                                {"role": "user", "content": hist}])
+        self.worker.result.connect(self._reflection_got)
+        self.worker.failed.connect(
+            lambda e: self._agent_finish("рефлексия не удалась: %s" % e))
+        self.worker.start()
+
+    def _reflection_got(self, lesson):
+        self.ai_output.appendPlainText("🪞 Рефлексия: %s\n" % lesson[:300])
+        self._agent_history.append(
+            {"role": "user", "content":
+                "Урок от самокритики: %s\nИсправь подход и продолжай "
+                "командой." % lesson})
+        self._agent_request()
+
+    # ---------- Диагноз по фотографии (vision) ----------
+    def _diagnose_photo(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Фото экрана с ошибкой", "",
+            "Изображения (*.jpg *.jpeg *.png *.bmp)")
+        if not path:
+            return
+        try:
+            import base64
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+        except OSError as ex:
+            QMessageBox.warning(self, "Фото", "Не удалось прочитать файл:\n"
+                                              + str(ex))
+            return
+        if not self._ai_available():
+            return
+        if not self.settings.get("api_key"):
+            QMessageBox.information(
+                self, "Диагноз по фото",
+                "Для распознавания фото нужен облачный провайдер с ключом "
+                "(Groq или OpenAI).\nOllama: используйте модель llava.")
+            return
+        kb = ("\n\nБаза знаний:\n" + self.kb_text) if self.kb_text else ""
+        sys = ("Ты — эксперт по диагностике устройств по фотографиям экрана. "
+               "На фото — консоль устройства (U-Boot/ТВ/приставка). Найди "
+               "все ошибки, расшифруй каждую и составь план восстановления. "
+               "Ответ строго по шаблону:\nОШИБКИ: <список>\nПРИЧИНА: <главная "
+               "причина>\nПЛАН: <пронумерованные шаги с командами>.\n"
+               "Пиши по-русски." + kb)
+        messages = [{"role": "system", "content": sys},
+                    {"role": "user", "content": [
+                        {"type": "text",
+                         "text": "Проанализируй этот снимок экрана."},
+                        {"type": "image_url",
+                         "image_url": {"url": "data:image/jpeg;base64,"
+                                                + b64}}]}]
+        self.ai_output.appendPlainText("— анализирую фото…\n")
+        self._ask_ai(messages, lambda t: AnalysisDialog(t, self).exec())
+
+    # ---------- Командная палитра (Ctrl+K) ----------
+    def _show_palette(self):
+        actions = [
+            ("Подключиться", self.connect_ssh),
+            ("Отключиться", self.disconnect_ssh),
+            ("Полный анализ устройства", self._full_analysis),
+            ("Объяснить вывод", self.explain_output),
+            ("Исправить автоматически", self._auto_fix),
+            ("Диагноз по фото", self._diagnose_photo),
+            ("Создать сценарий восстановления", self._make_script),
+            ("Следующий шаг сценария", self._copy_next_step),
+            ("Обучиться на новой ошибке", self._learn_new),
+            ("Применить найденное решение", self._apply_skill),
+            ("Сохранить успешное решение", self._learn_success),
+            ("Очистить терминал", self.term.clear),
+            ("Настройки ИИ", self.edit_ai_settings),
+            ("Проверить обновления", self._check_update),
+        ]
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Команды (Ctrl+K)")
+        dlg.resize(420, 380)
+        lay = QVBoxLayout(dlg)
+        edit = QLineEdit()
+        edit.setPlaceholderText("Введите команду…")
+        lst = QListWidget()
+        for name, fn in actions:
+            QListWidgetItem(name, lst)
+        lay.addWidget(edit)
+        lay.addWidget(lst)
+        lst.setCurrentRow(0)
+
+        def refill():
+            needle = edit.text().lower()
+            lst.clear()
+            for name, fn in actions:
+                if needle in name.lower():
+                    QListWidgetItem(name, lst)
+            if lst.count():
+                lst.setCurrentRow(0)
+
+        def run_current():
+            item = lst.currentItem()
+            if item:
+                dlg.accept()
+                for name, fn in actions:
+                    if name == item.text():
+                        fn()
+                        return
+
+        edit.textChanged.connect(refill)
+        edit.returnPressed.connect(run_current)
+        lst.itemDoubleClicked.connect(lambda _i: run_current())
+        edit.setFocus()
+        dlg.exec()
+
+    # ---------- Проверка обновлений (GitHub Releases) ----------
+    def _check_update(self):
+        today = datetime.date.today().isoformat()
+        if self.config.get("last_update_check") == today:
+            return
+        self.config["last_update_check"] = today
+        self._save_config()
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/Alexkkkkk/pytty-ai/"
+                "releases/latest",
+                headers={"User-Agent": "putty-ai"})
+            with urllib.request.urlopen(req, timeout=6) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            tag = str(data.get("tag_name", "")).lstrip("v")
+            assets = data.get("assets") or []
+            url = assets[0].get("browser_download_url", "") if assets \
+                else data.get("html_url", "")
+            if tag and url:
+                ret = QMessageBox.question(
+                    self, "Обновление PuTTY-AI",
+                    "Доступна версия %s.\nОткрыть страницу загрузки?" % tag,
+                    QMessageBox.StandardButton.Yes |
+                    QMessageBox.StandardButton.No)
+                if ret == QMessageBox.StandardButton.Yes:
+                    QDesktopServices.openUrl(QUrl(url))
+        except Exception:
+            pass
 
     # ---------- Полный анализ ----------
     def _full_analysis(self):
@@ -1057,12 +1415,21 @@ class MainWindow(QMainWindow):
         cmd = text.strip().strip("`").strip()
         up = cmd.upper()
         if not cmd or up.startswith("DONE"):
-            self._agent_finish("проблема решена или нужен человек")
+            if self._verifying:
+                self._agent_finish("проблема решена")
+                return
+            self.ai_output.appendPlainText("— агент считает проблему решенной, "
+                                           "запускаю верификатор…\n")
+            self._verify_result()
             return
         if self._agent_steps >= self.agent_steps_spin.value():
-            self._agent_finish("достигнут лимит шагов")
+            self._reflect_and_retry("исчерпан лимит шагов")
             return
         if up.startswith("WAIT"):
+            self._wait_count += 1
+            if self._wait_count > 60:
+                self._agent_finish("слишком долгое ожидание операции")
+                return
             self.ai_output.appendPlainText("…жду завершения операции…")
             self.agent_status.setText("ожидание… (шаг %d)" % self._agent_steps)
             QTimer.singleShot(self.agent_delay_spin.value() * 1000,
@@ -1098,15 +1465,21 @@ class MainWindow(QMainWindow):
             if ret != QMessageBox.StandardButton.Yes:
                 self._agent_finish("отменено пользователем")
                 return
+        # детект петли: агент повторяет одну команду → рефлексия
+        first = cmd.splitlines()[0].strip()
+        self._cmd_counts[first] = self._cmd_counts.get(first, 0) + 1
+        if self._cmd_counts[first] >= 3:
+            self._reflect_and_retry("агент зациклился на команде «%s»" % first)
+            return
         self._agent_steps += 1
         self._agent_last_cmd = cmd
+        self._wait_count = 0
         self.ai_output.appendPlainText("> " + cmd)
         self.agent_status.setText("шаг %d: %s"
                                   % (self._agent_steps,
                                      cmd.splitlines()[0][:60]))
         self._type_command(cmd)
-        QTimer.singleShot(self.agent_delay_spin.value() * 1000,
-                          self._agent_observe)
+        self._start_expect_wait()  # ждём приглашения консоли, не фикс. паузу
 
     def _agent_observe(self):
         if not self._agent_active:
@@ -1161,7 +1534,14 @@ class MainWindow(QMainWindow):
                                       self._send_key(s))
             tb.addAction(act_key)
         tb.addSeparator()
+        act_photo = QAction("Диагноз по фото", self)
+        act_photo.triggered.connect(self._diagnose_photo)
+        tb.addAction(act_photo)
+        tb.addSeparator()
         tb.addAction(act_exit)
+
+        sc = QShortcut(QKeySequence("Ctrl+K"), self)
+        sc.activated.connect(self._show_palette)
 
     def _build_ai_panel(self):
         panel = QWidget()
@@ -1354,6 +1734,7 @@ class MainWindow(QMainWindow):
     def _send_to_server(self, text):
         if self.ssh and self.ssh.isRunning():
             self.ssh.send(text)
+            self._log_io("IN ", text)
 
     def _send_key(self, seq):
         """Быстрая отправка служебной клавиши (Пробел/Tab/Enter/Esc/Ctrl+C)."""
@@ -1371,6 +1752,10 @@ class MainWindow(QMainWindow):
             self.settings["base_url"] = dlg.base.text().strip()
             self.settings["api_key"] = dlg.key.text().strip()
             self.settings["model"] = dlg.model.text().strip()
+            self.settings["base_url2"] = dlg.base2.text().strip()
+            self.settings["api_key2"] = dlg.key2.text().strip()
+            self.settings["model2"] = dlg.model2.text().strip()
+            self._save_config()
 
     def _ai_available(self):
         if not self.settings["base_url"]:

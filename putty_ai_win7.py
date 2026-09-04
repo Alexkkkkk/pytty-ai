@@ -71,6 +71,22 @@ RISKY_CMDS = (
 )
 
 
+LAZY_LADDER = (
+    "\n\nЛЕСТНИЦА ЛЕНИВОСТИ (останавливайся на первой сработавшей ступени):\n"
+    "1. Устройство уже работает или грузится? → ответь DONE, ничего не делай.\n"
+    "2. Проблема уже решена в базе знаний/навыках? → повтори то решение.\n"
+    "3. Хватает частичного исправления (partial upgrade, ustar)? → не делай "
+    "полное.\n"
+    "4. Чинится одной командой? → одна команда, не больше.\n"
+    "5. Только тогда — полный сценарий восстановления.\n"
+    "Багфикс = корневая причина, а не симптом. Удаление лишнего важнее "
+    "добавления нового.\n"
+    "НИКОГДА не экономь на безопасности: стирание флеш (mmc erase и т.п.) "
+    "программа заблокирует — не пытайся обойти.\n"
+    "После каждой команды оцени: проблема решена? → сразу DONE, не делай "
+    "лишних шагов.")
+
+
 def _cmd_safety(cmd):
     """('blocked'|'risky'|'ok', совпавший шаблон) для строки команды."""
     low = cmd.lower().strip()
@@ -966,7 +982,7 @@ class MainWindow(QMainWindow):
         kb = ("\n\nБаза знаний (опирайся на неё):\n" + self.kb_text) \
             if self.kb_text else ""
         if self.profile_combo.currentData() == "uboot":
-            return (
+            base = (
                 "Ты — автоматический агент, управляющий консолью U-Boot "
                 "(прошивка embedded-устройств: M7332, Amlogic, TV-приставки). "
                 "Твоя цель — найти и исправить ошибку в выводе терминала. "
@@ -980,11 +996,17 @@ class MainWindow(QMainWindow):
                 "затем fatls usb 0:1 /.\n"
                 "- Действуй пошагово: после каждой команды получишь её вывод."
                 + kb)
-        return (
-            "Ты — автоматический агент в терминале Linux. Цель — исправить "
-            "ошибку из вывода терминала. Отвечай ТОЛЬКО командой bash для "
-            "следующего шага (без пояснений и markdown), WAIT — если нужно "
-            "подождать, DONE — когда проблема решена.")
+        else:
+            base = (
+                "Ты — автоматический агент в терминале Linux. Цель — "
+                "исправить ошибку из вывода терминала. Отвечай ТОЛЬКО "
+                "командой bash для следующего шага (без пояснений и "
+                "markdown), WAIT — если нужно подождать, DONE — когда "
+                "проблема решена.")
+        if getattr(self, "chk_lazy", None) is not None and \
+                self.chk_lazy.isChecked():
+            base += LAZY_LADDER
+        return base
 
     def _auto_fix(self):
         if self._ai_busy:
@@ -1058,8 +1080,8 @@ class MainWindow(QMainWindow):
                 self, "⛔ ОПАСНАЯ КОМАНДА",
                 "Команда может ПОЛНОСТЬЮ СТЕРЕТЬ флешку (eMMC/SPI/NAND)!\n\n"
                 "> " + cmd + "\n\nПродолжить на свой страх и риск?",
-                QMessageBox.Yes |
-                QMessageBox.No)
+                QMessageBox.StandardButton.Yes |
+                QMessageBox.StandardButton.No)
             if ret != QMessageBox.Yes:
                 self._agent_finish("опасная команда отклонена пользователем")
                 return
@@ -1071,8 +1093,8 @@ class MainWindow(QMainWindow):
             ret = QMessageBox.question(
                 self, "Авто-исправление — шаг %d" % (self._agent_steps + 1),
                 "Выполнить команду?\n\n" + cmd,
-                QMessageBox.Yes |
-                QMessageBox.No)
+                QMessageBox.StandardButton.Yes |
+                QMessageBox.StandardButton.No)
             if ret != QMessageBox.Yes:
                 self._agent_finish("отменено пользователем")
                 return
@@ -1166,6 +1188,9 @@ class MainWindow(QMainWindow):
         self.chk_autoanalysis = QCheckBox(
             "При подключении сразу запускать полный анализ")
         self.chk_autoanalysis.setChecked(False)
+        self.chk_lazy = QCheckBox(
+            "Ленивый режим (ponytail): минимум команд, без over-engineering")
+        self.chk_lazy.setChecked(True)
         row0 = QHBoxLayout()
         row0.addWidget(QLabel("Макс. шагов:"))
         self.agent_steps_spin = QSpinBox()
@@ -1186,6 +1211,7 @@ class MainWindow(QMainWindow):
         l0.addWidget(self.chk_danger)
         l0.addWidget(self.chk_autopilot)
         l0.addWidget(self.chk_autoanalysis)
+        l0.addWidget(self.chk_lazy)
         l0.addLayout(row0)
         l0.addWidget(btn_agent)
         l0.addWidget(self.agent_status)
@@ -1416,8 +1442,8 @@ class MainWindow(QMainWindow):
                 self, "Опасная команда",
                 "Команда может повредить данные на флешке!\n\n> " + cmd +
                 "\n\nВыполнить?",
-                QMessageBox.Yes |
-                QMessageBox.No)
+                QMessageBox.StandardButton.Yes |
+                QMessageBox.StandardButton.No)
             if ret != QMessageBox.Yes:
                 return
         # вставляем, только если терминал не занят своей строкой

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PuTTY-AI — SSH-клиент с ИИ-помощником (Win7).
+PuTTY-AI — SSH-клиент с ИИ-помощником.
 
 Возможности:
   - подключение по SSH (пароль или ключ);
@@ -26,11 +26,12 @@ except ImportError:
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
-    QFormLayout, QLineEdit, QSpinBox, QPushButton, QLabel, QPlainTextEdit,
-    QToolBar, QDockWidget, QMessageBox, QFileDialog, QGroupBox
+    QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
+    QLabel, QPlainTextEdit, QToolBar, QDockWidget, QMessageBox, QFileDialog,
+    QGroupBox, QAction
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QAction, QFont, QTextCursor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtGui import QFont, QTextCursor
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +340,7 @@ class AiSettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PuTTY-AI — SSH-клиент с ИИ-помощником (Win7)")
+        self.setWindowTitle("PuTTY-AI — SSH-клиент с ИИ-помощником")
         self.resize(1000, 640)
 
         self.settings = {
@@ -353,6 +354,8 @@ class MainWindow(QMainWindow):
         self.ssh = None
         self._ai_busy = False
         self._ac_cache = {}
+        self._agent_active = False
+        self._agent_last_cmd = ""
 
         # --- терминал ---
         self.term = Terminal()
@@ -367,6 +370,186 @@ class MainWindow(QMainWindow):
         # --- панель ИИ ---
         self._build_ai_panel()
         self._build_toolbar()
+
+    def _load_kb(self):
+        """Загружает базу знаний по ошибкам U-Boot (рядом с exe/скриптом)."""
+        dirs = [os.path.dirname(os.path.abspath(sys.argv[0]))]
+        if hasattr(sys, "_MEIPASS"):  # PyInstaller --onefile
+            dirs.append(sys._MEIPASS)
+        for d in dirs:
+            path = os.path.join(d, "u_boot_errors_kb.md")
+            try:
+                with open(path, encoding="utf-8") as f:
+                    return f.read()
+            except OSError:
+                continue
+        return ""
+
+    def _system_prompt(self):
+        """Системный промпт с учётом профиля и базы знаний."""
+        profile = self.profile_combo.currentData()
+        kb = ""
+        if self.kb_text:
+            kb = ("\n\nБаза знаний по ошибкам U-Boot/прошивке (опирайся на неё, "
+                  "но не цитируй дословно):\n" + self.kb_text)
+        if profile == "uboot":
+            return (
+                "Ты — эксперт по загрузчику U-Boot и прошивке embedded-устройств "
+                "(TV-приставки, роутеры; SoC Amlogic/MediaTek/M7332). Пользователь "
+                "работает в консоли U-Boot через UART (PuTTY). Отвечай по-русски: "
+                "1) причина ошибки, 2) точные команды для исправления, 3) чем "
+                "проверить результат. Кратко, без воды." + kb)
+        return (
+            "Ты помощник в терминале Linux. Объясни по-русски кратко: "
+            "есть ли в выводе ошибки, почему они возникли и как "
+            "исправить. Если всё в порядке — скажи об этом одной фразой." + kb)
+
+    def _cmd_prompt(self):
+        if self.profile_combo.currentData() == "uboot":
+            return ("Ты — эксперт по U-Boot. Пользователь описывает задачу по "
+                    "прошивке/восстановлению устройства — верни ТОЛЬКО одну "
+                    "команду U-Boot (или короткую последовательность через ; ) "
+                    "без пояснений и без markdown.")
+        return ("Ты помощник в терминале Linux. Пользователь описывает "
+                "задачу — верни ТОЛЬКО одну команду bash без пояснений, "
+                "без markdown и без кавычек вокруг команды.")
+
+    def _ac_prompt(self):
+        if self.profile_combo.currentData() == "uboot":
+            return ("Дополни начало команды U-Boot. Ответь ТОЛЬКО продолжением "
+                    "текста (без повтора введённого), либо пустой строкой, "
+                    "если не уверен. Без пояснений и markdown.")
+        return ("Дополни начало команды bash. Ответь ТОЛЬКО продолжением "
+                "текста (без повтора введённого), либо пустой строкой, "
+                "если не уверен. Без пояснений и markdown.")
+
+    # ---------- Авто-исправление (агент) ----------
+    def _agent_prompt(self):
+        kb = ("\n\nБаза знаний (опирайся на неё):\n" + self.kb_text) \
+            if self.kb_text else ""
+        if self.profile_combo.currentData() == "uboot":
+            return (
+                "Ты — автоматический агент, управляющий консолью U-Boot "
+                "(прошивка embedded-устройств: M7332, Amlogic, TV-приставки). "
+                "Твоя цель — найти и исправить ошибку в выводе терминала. "
+                "Правила:\n"
+                "- Отвечай ТОЛЬКО командой U-Boot (можно несколько строк) для "
+                "следующего шага, без пояснений, без markdown, без кавычек.\n"
+                "- Если нужно подождать завершения долгой операции "
+                "(например прошивки) — ответь WAIT.\n"
+                "- Если проблема решена или дальше нужен человек — DONE.\n"
+                "- Перед прошивкой обязательно проверь флешку: usb start, "
+                "затем fatls usb 0:1 /.\n"
+                "- Действуй пошагово: после каждой команды получишь её вывод."
+                + kb)
+        return (
+            "Ты — автоматический агент в терминале Linux. Цель — исправить "
+            "ошибку из вывода терминала. Отвечай ТОЛЬКО командой bash для "
+            "следующего шага (без пояснений и markdown), WAIT — если нужно "
+            "подождать, DONE — когда проблема решена.")
+
+    def _auto_fix(self):
+        if self._ai_busy:
+            self.ai_output.appendPlainText("…ИИ занят, подождите…")
+            return
+        if self._agent_active:
+            self._agent_finish("остановлен (повторный запуск)")
+            return
+        if not (self.ssh and self.ssh.isRunning()):
+            QMessageBox.information(
+                self, "Авто-исправление",
+                "Нужно подключиться через «Подключиться»,\n"
+                "чтобы программа могла сама выполнять команды в терминале.")
+            return
+        self._ai_busy = True
+        self._agent_active = True
+        self._agent_steps = 0
+        self._agent_history = [
+            {"role": "system", "content": self._agent_prompt()}]
+        out = self.term.last_output(100)
+        self._agent_history.append(
+            {"role": "user", "content":
+                "Текущий вывод терминала (в нём есть ошибка — исправь):\n"
+                + out})
+        self.ai_output.appendPlainText("— агент запущен, анализирую…\n")
+        self.agent_status.setText("агент работает…")
+        self._agent_request()
+
+    def _agent_request(self):
+        self.worker = AiWorker(self.settings, self._agent_history[-30:])
+        self.worker.result.connect(self._agent_got)
+        self.worker.failed.connect(self._agent_fail)
+        self.worker.start()
+
+    def _agent_fail(self, err):
+        self.ai_output.appendPlainText("[агент: ошибка ИИ: %s]\n" % err)
+        self._agent_finish("ошибка ИИ")
+
+    def _agent_finish(self, msg):
+        self._agent_active = False
+        self._ai_busy = False
+        self.agent_status.setText("готово: " + msg)
+        self.ai_output.appendPlainText("— агент завершил работу (%s)\n" % msg)
+
+    def _agent_got(self, text):
+        if not self._agent_active:
+            return
+        cmd = text.strip().strip("`").strip()
+        up = cmd.upper()
+        if not cmd or up.startswith("DONE"):
+            self._agent_finish("проблема решена или нужен человек")
+            return
+        if self._agent_steps >= self.agent_steps_spin.value():
+            self._agent_finish("достигнут лимит шагов")
+            return
+        if up.startswith("WAIT"):
+            self.ai_output.appendPlainText("…жду завершения операции…")
+            self.agent_status.setText("ожидание… (шаг %d)" % self._agent_steps)
+            QTimer.singleShot(self.agent_delay_spin.value() * 1000,
+                              self._agent_observe)
+            return
+        if self.chk_confirm.isChecked():
+            ret = QMessageBox.question(
+                self, "Авто-исправление — шаг %d" % (self._agent_steps + 1),
+                "Выполнить команду?\n\n" + cmd,
+                QMessageBox.StandardButton.Yes |
+                QMessageBox.StandardButton.No)
+            if ret != QMessageBox.Yes:
+                self._agent_finish("отменено пользователем")
+                return
+        self._agent_steps += 1
+        self._agent_last_cmd = cmd
+        self.ai_output.appendPlainText("> " + cmd)
+        self.agent_status.setText("шаг %d: %s"
+                                  % (self._agent_steps,
+                                     cmd.splitlines()[0][:60]))
+        self._type_command(cmd)
+        QTimer.singleShot(self.agent_delay_spin.value() * 1000,
+                          self._agent_observe)
+
+    def _agent_observe(self):
+        if not self._agent_active:
+            return
+        out = self.term.last_output(100)
+        self._agent_history.append(
+            {"role": "assistant", "content": self._agent_last_cmd})
+        self._agent_history.append(
+            {"role": "user", "content": "Вывод после команды:\n" + out})
+        self._agent_request()
+
+    def _type_command(self, cmd):
+        """Ввести команду в терминал, как если бы её набрал пользователь."""
+        if self.term.buffer.strip():
+            self.term.insert_remote("\n")
+            self._send_to_server("\n")
+            self.term.buffer = ""
+        for ch in cmd:
+            self.term.buffer += ch
+            self.term.insertPlainText(ch)
+            self._send_to_server(ch)
+        self.term.insert_remote("\n")
+        self._send_to_server("\n")
+        self.term.buffer = ""
 
     # ---------- UI ----------
     def _build_toolbar(self):
@@ -392,6 +575,40 @@ class MainWindow(QMainWindow):
     def _build_ai_panel(self):
         panel = QWidget()
         lay = QVBoxLayout(panel)
+
+        # -- профиль помощника --
+        self.profile_combo = QComboBox()
+        self.profile_combo.addItem("Профиль: Linux shell", "linux")
+        self.profile_combo.addItem("Профиль: U-Boot / прошивка устройств", "uboot")
+        lay.addWidget(self.profile_combo)
+
+        # -- авто-исправление (агент) --
+        g0 = QGroupBox("Авто-исправление (ИИ сам выполняет команды)")
+        l0 = QVBoxLayout(g0)
+        self.chk_confirm = QCheckBox(
+            "Спрашивать подтверждение перед каждой командой")
+        self.chk_confirm.setChecked(True)
+        row0 = QHBoxLayout()
+        row0.addWidget(QLabel("Макс. шагов:"))
+        self.agent_steps_spin = QSpinBox()
+        self.agent_steps_spin.setRange(2, 20)
+        self.agent_steps_spin.setValue(8)
+        row0.addWidget(self.agent_steps_spin)
+        row0.addWidget(QLabel("Пауза, сек:"))
+        self.agent_delay_spin = QSpinBox()
+        self.agent_delay_spin.setRange(2, 120)
+        self.agent_delay_spin.setValue(8)
+        row0.addWidget(self.agent_delay_spin)
+        row0.addStretch(1)
+        btn_agent = QPushButton("Исправить ошибку автоматически")
+        btn_agent.clicked.connect(self._auto_fix)
+        self.agent_status = QLabel("агент не запущен")
+        self.agent_status.setWordWrap(True)
+        l0.addWidget(self.chk_confirm)
+        l0.addLayout(row0)
+        l0.addWidget(btn_agent)
+        l0.addWidget(self.agent_status)
+        lay.addWidget(g0)
 
         # -- объяснение вывода --
         g1 = QGroupBox("Объяснить вывод терминала")
@@ -530,10 +747,7 @@ class MainWindow(QMainWindow):
             return
         context = self.term.last_output(20)
         messages = [
-            {"role": "system", "content":
-                "Ты помощник в терминале Linux. Пользователь описывает "
-                "задачу — верни ТОЛЬКО одну команду bash без пояснений, "
-                "без markdown и без кавычек вокруг команды."},
+            {"role": "system", "content": self._cmd_prompt()},
             {"role": "user", "content":
                 f"Контекст (последний вывод терминала):\n{context}\n\n"
                 f"Задача: {wish}"},

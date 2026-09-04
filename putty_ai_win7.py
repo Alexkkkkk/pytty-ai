@@ -904,6 +904,7 @@ class MainWindow(QMainWindow):
         l0.addWidget(self.chk_confirm)
         l0.addWidget(self.chk_danger)
         l0.addWidget(self.chk_autopilot)
+        l0.addWidget(self.chk_autoanalysis)
         l0.addLayout(row0)
         l0.addWidget(btn_agent)
         l0.addWidget(self.agent_status)
@@ -999,7 +1000,7 @@ class MainWindow(QMainWindow):
                              dlg.user.text().strip(),
                              dlg.password.text(), dlg.keyfile.text().strip())
         self.ssh.dataReceived.connect(self.term.insert_remote)
-        self.ssh.connected.connect(lambda: self.term.set_connected(True))
+        self.ssh.connected.connect(self._on_connected_auto)
         self.ssh.disconnected.connect(self._on_disconnected)
         self.ssh.start()
 
@@ -1012,6 +1013,13 @@ class MainWindow(QMainWindow):
         self.term.local_echo = True
         self.term.enter_seq = "\n"
         self.term.insert_remote("\n[отключено]\n")
+
+    def _on_connected_auto(self):
+        """После подключения: отметить + (по галочке) автоанализ."""
+        self.term.set_connected(True)
+        if self.chk_autoanalysis.isChecked() and \
+                self.settings.get("base_url"):
+            QTimer.singleShot(2000, self._full_analysis)
 
     def _on_disconnected(self, err):
         self.term.set_connected(False)

@@ -634,6 +634,33 @@ class MainWindow(QMainWindow):
         self.ai_output.appendPlainText("шаг %d/%d скопирован: %s\n"
                                        % (i + 1, len(cmds), cmds[i]))
 
+    # ---------- Полный анализ ----------
+    def _full_analysis(self):
+        if not self._ai_available():
+            return
+        kb = ("\n\nБаза знаний:\n" + self.kb_text) if self.kb_text else ""
+        sys = ("Ты — эксперт-диагност по embedded-устройствам и U-Boot. "
+               "Сделай ПОЛНЫЙ анализ вывода терминала и ответь СТРОГО по "
+               "шаблону:\n"
+               "1. УСТРОЙСТВО/ПЛАТФОРМА: что удалось определить "
+               "(SoC, плата, загрузчик)\n"
+               "2. СОСТОЯНИЕ: что сейчас происходит с устройством\n"
+               "3. ОШИБКИ: список найденных ошибок с расшифровкой каждой\n"
+               "4. КОРНЕВАЯ ПРИЧИНА: главная причина проблемы\n"
+               "5. ПЛАН ВОССТАНОВЛЕНИЯ: пронумерованные шаги с точными "
+               "командами для терминала\n"
+               "6. РИСКИ: что может пойти не так, чего избегать\n"
+               "Пиши по-русски, кратко и по делу." + kb)
+        out = self.term.last_output(150)
+        messages = [{"role": "system", "content": sys},
+                    {"role": "user", "content": "Вывод терминала:\n" + out}]
+        self.ai_output.appendPlainText("— выполняю полный анализ…\n")
+        self._ask_ai(messages, self._show_analysis)
+
+    def _show_analysis(self, text):
+        dlg = AnalysisDialog(text, self)
+        dlg.exec_()
+
     # ---------- Авто-исправление (агент) ----------
     def _agent_prompt(self):
         kb = ("\n\nБаза знаний (опирайся на неё):\n" + self.kb_text) \
@@ -740,7 +767,7 @@ class MainWindow(QMainWindow):
             self.ai_output.appendPlainText(
                 "⚠ Внимание: команда записывает во флеш (%s)\n" % pat)
 
-        if self.chk_confirm.isChecked():
+        if self.chk_confirm.isChecked() and not self.chk_autopilot.isChecked():
             ret = QMessageBox.question(
                 self, "Авто-исправление — шаг %d" % (self._agent_steps + 1),
                 "Выполнить команду?\n\n" + cmd,
@@ -821,6 +848,12 @@ class MainWindow(QMainWindow):
         self.chk_confirm = QCheckBox(
             "Спрашивать подтверждение перед каждой командой")
         self.chk_confirm.setChecked(True)
+        self.chk_danger = QCheckBox(
+            "Разрешить опасные команды (mmc erase, стирание флеш)")
+        self.chk_danger.setChecked(False)
+        self.chk_autopilot = QCheckBox(
+            "Полное управление (автопилот: без подтверждений шагов)")
+        self.chk_autopilot.setChecked(False)
         row0 = QHBoxLayout()
         row0.addWidget(QLabel("Макс. шагов:"))
         self.agent_steps_spin = QSpinBox()
@@ -839,6 +872,7 @@ class MainWindow(QMainWindow):
         self.agent_status.setWordWrap(True)
         l0.addWidget(self.chk_confirm)
         l0.addWidget(self.chk_danger)
+        l0.addWidget(self.chk_autopilot)
         l0.addLayout(row0)
         l0.addWidget(btn_agent)
         l0.addWidget(self.agent_status)

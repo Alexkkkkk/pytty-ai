@@ -16,7 +16,10 @@ PuTTY-AI — SSH-клиент с ИИ-помощником.
 import sys
 import os
 import json
+import time
 import socket
+import datetime
+import importlib.util
 import urllib.request
 
 try:
@@ -31,7 +34,24 @@ from PyQt6.QtWidgets import (
     QFileDialog, QGroupBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QAction, QFont, QTextCursor, QGuiApplication, QColor
+from PyQt6.QtGui import QAction, QFont, QIcon, QTextCursor, QGuiApplication, QColor
+
+
+def _load_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def _save_json(path, data):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +96,10 @@ class Terminal(QPlainTextEdit):
         super().__init__(parent)
         self.setFont(QFont("Consolas", 11))
         self.setStyleSheet(
-            "QPlainTextEdit { background: #1e1e1e; color: #d4d4d4; }")
+            "QPlainTextEdit { background: #0d1117; color: #7ee787; "
+            "border: 1px solid #30363d; border-radius: 8px; "
+            "padding: 6px; selection-background-color: #1f6feb; "
+            "selection-color: #ffffff; }")
         self.setReadOnly(False)
         self.buffer = ""       # текущая вводимая строка (локальное эхо)
         self.history = []
@@ -498,6 +521,19 @@ class MainWindow(QMainWindow):
             "model": "qwen2.5-coder",
         })
         self._conn = self.config.get("conn", {})
+
+        # --- самообучение: навыки, правила, самопереписываемый код ---
+        self._base_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        self.skills = _load_json(os.path.join(self._base_dir, "skills.json"), [])
+        self.extra_rules = _load_json(
+            os.path.join(self._base_dir, "learned_rules.json"),
+            {"dangerous": [], "risky": []})
+        self._output_hook = None
+        self._matched_skill = None
+        self._announced = set()
+        self._last_skill_check = 0.0
+        self._last_hook_msg = ""
+        self._load_user_patches()
         # --- база знаний по U-Boot (файл u_boot_errors_kb.md рядом с программой) ---
         self.kb_text = self._load_kb()
 
@@ -662,6 +698,161 @@ class MainWindow(QMainWindow):
         self._highlight_step(self._script_idx - 1)
         self.ai_output.appendPlainText("шаг %d/%d скопирован: %s\n"
                                        % (i + 1, len(cmds), cmds[i]))
+        lvl, _ = self._safety(cmds[i])
+        if lvl == "blocked":
+            self.ai_output.appendPlainText(
+                "⛔ ВНИМАНИЕ: это команда ПОЛНОГО стирания флешки!\n")
+        elif lvl == "risky":
+            self.ai_output.appendPlainText(
+                "⚠ ВНИМАНИЕ: команда записывает во флеш.\n")
+
+    # ---------- Самообучение: навыки, правила, самопереписывание ----------
+    def _load_user_patches(self):
+        """Загружает user_patches.py — код, который ИИ написал сам себе."""
+        try:
+            path = os.path.join(self._base_dir, "user_patches.py")
+            spec = importlib.util.spec_from_file_location("user_patches",
+                                                          path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            hook = getattr(mod, "on_output", None)
+            if callable(hook):
+                self._output_hook = hook
+        except Exception:
+            self._output_hook = None
+
+    def _safety(self, cmd):
+        """Базовые правила + правила, выученные программой самостоятельно."""
+        level, pat = self._safety(cmd)
+        if level == "ok":
+            low = cmd.lower()
+            for p in self.extra_rules.get("dangerous", []):
+                if p.lower() in low:
+                    return "blocked", p
+            for p in self.extra_rules.get("risky", []):
+                if p.lower() in low:
+                    return "risky", p
+        return level, pat
+
+    def _on_term_output(self, text):
+        """Вывод терминала: показать + хук самопереписанного кода + навыки."""
+        self.term.insert_remote(text)
+        if self._output_hook:
+            try:
+                msg = self._output_hook(self.term.last_output(60))
+                if isinstance(msg, str) and msg and msg != self._last_hook_msg:
+                    self._last_hook_msg = msg
+                    self.ai_output.appendPlainText("🧩 user_patches: "
+                                                   + msg + "\n")
+            except Exception:
+                pass
+        now = time.time()
+        if now - self._last_skill_check < 3:
+            return
+        self._last_skill_check = now
+        out = self.term.last_output(60)
+        for s in self.skills:
+            trig = str(s.get("trigger", "")).strip()
+            if len(trig) >= 8 and trig in out and trig not in self._announced:
+                self._announced.add(trig)
+                self._matched_skill = s
+                s["hits"] = int(s.get("hits", 0)) + 1
+                _save_json(os.path.join(self._base_dir, "skills.json"),
+                           self.skills)
+                self.ai_output.appendPlainText(
+                    "🎯 Найдено известное решение: %s\n"
+                    "   Нажмите «Применить найденное решение»\n"
+                    % s.get("note", trig))
+                self.skill_status.setText(
+                    "навыков: %d | 🎯 найдено совпадение" % len(self.skills))
+
+    def _apply_skill(self):
+        s = getattr(self, "_matched_skill", None)
+        if not s:
+            QMessageBox.information(
+                self, "Навыки",
+                "Пока нет найденного решения.\nПоявится само, когда в выводе "
+                "терминала встретится известная ошибка.")
+            return
+        cmds = [str(c).strip() for c in s.get("solution", []) if str(c).strip()]
+        if not cmds:
+            return
+        for c in cmds:
+            level, pat = self._safety(c)
+            if level == "blocked" and not self.chk_danger.isChecked():
+                self.ai_output.appendPlainText(
+                    "⛔ Навык содержит запрещённую команду (%s) — прервано.\n"
+                    "Включите «Разрешить опасные команды» для выполнения.\n"
+                    % pat)
+                return
+        self.ai_output.appendPlainText(
+            "🎯 Применяю выученное решение (%d шагов)…\n" % len(cmds))
+        self._type_skill(cmds, 0)
+
+    def _type_skill(self, cmds, i):
+        if i >= len(cmds):
+            self.ai_output.appendPlainText("— навык выполнен\n")
+            return
+        self._type_command(cmds[i])
+        QTimer.singleShot(3000, lambda: self._type_skill(cmds, i + 1))
+
+    def _learn_new(self):
+        """ИИ анализирует новую ошибку и переписывает правила программы."""
+        if not self._ai_available():
+            return
+        kb = ("\n\nБаза знаний:\n" + self.kb_text) if self.kb_text else ""
+        sys = ("Ты — движок самообучения программы. По выводу терминала и "
+               "выполненным командам создай запись навыка. Ответь СТРОГО одним "
+               "JSON-объектом (без markdown и пояснений):\n"
+               '{"trigger": "<1-2 строки уникального фрагмента ошибки>", '
+               '"platform": "uboot|linux", '
+               '"solution": ["команда1", "команда2"], '
+               '"note": "<что это было и почему помогло>", '
+               '"dangerous": true/false}\n'
+               "dangerous=true только если решение стирает/пишет во флеш." + kb)
+        user = ("Вывод терминала:\n" + self.term.last_output(100) +
+                "\n\nВыполненные команды:\n" +
+                "\n".join(getattr(self, "_session_cmds", [])) +
+                "\n\nПрофиль: " + str(self.profile_combo.currentData()))
+        self.ai_output.appendPlainText("🧠 обучаюсь на новой ошибке…\n")
+        self._ask_ai([{"role": "system", "content": sys},
+                      {"role": "user", "content": user}], self._apply_learning)
+
+    def _apply_learning(self, text):
+        import re as _re
+        m = _re.search(r"\{.*\}", text, _re.S)
+        if not m:
+            self.ai_output.appendPlainText(
+                "[обучение: ИИ вернул не JSON, запись не создана]\n")
+            return
+        try:
+            data = json.loads(m.group(0))
+        except ValueError:
+            self.ai_output.appendPlainText(
+                "[обучение: битый JSON, запись не создана]\n")
+            return
+        trig = str(data.get("trigger", "")).strip()
+        sol = [str(c).strip() for c in data.get("solution", []) if str(c).strip()]
+        if not trig or not sol:
+            self.ai_output.appendPlainText(
+                "[обучение: пустой trigger/solution]\n")
+            return
+        data["hits"] = 0
+        data.setdefault("platform", "uboot")
+        data.setdefault("note", trig[:120])
+        self.skills.append(data)
+        _save_json(os.path.join(self._base_dir, "skills.json"), self.skills)
+        rule_note = ""
+        if data.get("dangerous"):
+            p = trig.splitlines()[0][:60]
+            self.extra_rules.setdefault("dangerous", []).append(p)
+            _save_json(os.path.join(self._base_dir, "learned_rules.json"),
+                       self.extra_rules)
+            rule_note = "\n⛔ Программа переписала свои правила: теперь блокирует «%s»" % p
+        self.kb_text = self._load_kb()
+        self.skill_status.setText("навыков: %d" % len(self.skills))
+        self.ai_output.appendPlainText("🧠 Выучен новый навык: %s%s\n"
+                                       % (data["note"], rule_note))
 
     # ---------- Полный анализ ----------
     def _full_analysis(self):
@@ -775,7 +966,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(self.agent_delay_spin.value() * 1000,
                               self._agent_observe)
             return
-        level, pat = _cmd_safety(cmd)
+        level, pat = self._safety(cmd)
         if level == "blocked":
             if not self.chk_danger.isChecked():
                 self.ai_output.appendPlainText(
@@ -931,7 +1122,9 @@ class MainWindow(QMainWindow):
         self.suggestion = QLabel("—")
         self.suggestion.setWordWrap(True)
         self.suggestion.setStyleSheet(
-            "QLabel { color: #2e7d32; font-family: Consolas; }")
+            "QLabel { color: #7ee787; font-family: Consolas; "
+            "background: #0d1117; border: 1px solid #30363d; "
+            "border-radius: 5px; padding: 4px; }")
         btn_insert = QPushButton("Вставить в терминал")
         btn_insert.clicked.connect(self._insert_suggestion)
         l2.addWidget(self.ask_input)
@@ -981,6 +1174,20 @@ class MainWindow(QMainWindow):
         lay.addWidget(g2)
         lay.addWidget(g3)
         lay.addWidget(g4)
+        lay.addWidget(g5)
+
+        # -- самообучение: программа переписывает свои правила --
+        g6 = QGroupBox("Самообучение (переписывает свои правила)")
+        l6 = QVBoxLayout(g6)
+        btn_learn_new = QPushButton("Обучиться на новой ошибке")
+        btn_learn_new.clicked.connect(self._learn_new)
+        btn_apply_skill = QPushButton("Применить найденное решение")
+        btn_apply_skill.clicked.connect(self._apply_skill)
+        self.skill_status = QLabel("навыков: 0")
+        l6.addWidget(btn_learn_new)
+        l6.addWidget(btn_apply_skill)
+        l6.addWidget(self.skill_status)
+        lay.addWidget(g6)
 
         dock = QDockWidget("ИИ-помощник")
         dock.setWidget(panel)
@@ -1002,7 +1209,7 @@ class MainWindow(QMainWindow):
         self.ssh = SshWorker(dlg.host.text().strip(), dlg.port.value(),
                              dlg.user.text().strip(),
                              dlg.password.text(), dlg.keyfile.text().strip())
-        self.ssh.dataReceived.connect(self.term.insert_remote)
+        self.ssh.dataReceived.connect(self._on_term_output)
         self.ssh.connected.connect(self._on_connected_auto)
         self.ssh.disconnected.connect(self._on_disconnected)
         self.ssh.start()
@@ -1107,7 +1314,7 @@ class MainWindow(QMainWindow):
         cmd = getattr(self, "_pending_cmd", "")
         if not cmd:
             return
-        level, _pat = _cmd_safety(cmd)
+        level, _pat = self._safety(cmd)
         if level != "ok":
             ret = QMessageBox.warning(
                 self, "Опасная команда",
@@ -1168,8 +1375,136 @@ class MainWindow(QMainWindow):
 
 
 # ---------------------------------------------------------------------------
+# Дизайн: тёмная тема в стиле современных IDE
+# ---------------------------------------------------------------------------
+STYLESHEET = """
+QWidget {
+    background-color: #1b1e23;
+    color: #d7dae0;
+    font-family: "Segoe UI";
+    font-size: 13px;
+}
+QMainWindow::separator { background: #2a2e36; width: 3px; height: 3px; }
+QToolBar {
+    background: #23272e;
+    border: none;
+    border-bottom: 1px solid #2f343d;
+    spacing: 4px;
+    padding: 4px;
+}
+QToolButton {
+    background: transparent;
+    border-radius: 6px;
+    padding: 5px 10px;
+    color: #d7dae0;
+}
+QToolButton:hover { background: #2f3540; }
+QToolButton:pressed { background: #3b4252; }
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #2f3540, stop:1 #262b33);
+    border: 1px solid #3c4350;
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #e2e6ec;
+}
+QPushButton:hover { border-color: #4f9cf9; background: #333a46; }
+QPushButton:pressed { background: #1f242b; }
+QPushButton:disabled { color: #6b7280; background: #23272e; }
+QGroupBox {
+    background: #20242b;
+    border: 1px solid #2f343d;
+    border-radius: 8px;
+    margin-top: 14px;
+    padding-top: 10px;
+    font-weight: 600;
+    color: #9fd0ff;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 4px;
+}
+QLineEdit, QSpinBox, QComboBox, QPlainTextEdit {
+    background: #14171c;
+    border: 1px solid #333a45;
+    border-radius: 5px;
+    padding: 4px 6px;
+    selection-background-color: #4f9cf9;
+    selection-color: #ffffff;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #4f9cf9; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView {
+    background: #1b1f26;
+    border: 1px solid #333a45;
+    selection-background-color: #4f9cf9;
+}
+QCheckBox { spacing: 6px; color: #c9ced6; }
+QCheckBox::indicator {
+    width: 15px;
+    height: 15px;
+    border: 1px solid #3c4350;
+    border-radius: 4px;
+    background: #14171c;
+}
+QCheckBox::indicator:checked {
+    background: #4f9cf9;
+    border-color: #4f9cf9;
+}
+QLabel { color: #c9ced6; background: transparent; }
+QDockWidget { color: #9fd0ff; font-weight: 600; }
+QDockWidget::title {
+    background: #23272e;
+    padding: 6px;
+    border-bottom: 1px solid #2f343d;
+}
+QScrollBar:vertical {
+    background: #16191e;
+    width: 10px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical {
+    background: #333a45;
+    min-height: 24px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical:hover { background: #4f9cf9; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar:horizontal {
+    background: #16191e;
+    height: 10px;
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal {
+    background: #333a45;
+    min-width: 24px;
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal:hover { background: #4f9cf9; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QMessageBox, QDialog { background: #1b1e23; }
+QMenu { background: #23272e; border: 1px solid #333a45; }
+QMenu::item:selected { background: #4f9cf9; }
+QToolTip {
+    background: #23272e;
+    color: #d7dae0;
+    border: 1px solid #333a45;
+}
+"""
+
+
 def main():
     app = QApplication(sys.argv)
+    app.setStyleSheet(STYLESHEET)
+    try:
+        icon_path = os.path.join(
+            os.path.dirname(os.path.abspath(sys.argv[0])), "app.ico")
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+    except Exception:
+        pass
     w = MainWindow()
     w.show()
     sys.exit(app.exec())

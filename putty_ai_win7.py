@@ -34,7 +34,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QGroupBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt5.QtGui import QAction, QFont, QTextCursor, QGuiApplication, QColor
+from PyQt5.QtGui import QAction, QFont, QIcon, QTextCursor, QGuiApplication, QColor
 
 
 def _load_json(path, default):
@@ -96,7 +96,10 @@ class Terminal(QPlainTextEdit):
         super().__init__(parent)
         self.setFont(QFont("Consolas", 11))
         self.setStyleSheet(
-            "QPlainTextEdit { background: #1e1e1e; color: #d4d4d4; }")
+            "QPlainTextEdit { background: #0d1117; color: #7ee787; "
+            "border: 1px solid #30363d; border-radius: 8px; "
+            "padding: 6px; selection-background-color: #1f6feb; "
+            "selection-color: #ffffff; }")
         self.setReadOnly(False)
         self.buffer = ""       # текущая вводимая строка (локальное эхо)
         self.history = []
@@ -1119,7 +1122,9 @@ class MainWindow(QMainWindow):
         self.suggestion = QLabel("—")
         self.suggestion.setWordWrap(True)
         self.suggestion.setStyleSheet(
-            "QLabel { color: #2e7d32; font-family: Consolas; }")
+            "QLabel { color: #7ee787; font-family: Consolas; "
+            "background: #0d1117; border: 1px solid #30363d; "
+            "border-radius: 5px; padding: 4px; }")
         btn_insert = QPushButton("Вставить в терминал")
         btn_insert.clicked.connect(self._insert_suggestion)
         l2.addWidget(self.ask_input)
@@ -1370,8 +1375,136 @@ class MainWindow(QMainWindow):
 
 
 # ---------------------------------------------------------------------------
+# Дизайн: тёмная тема в стиле современных IDE
+# ---------------------------------------------------------------------------
+STYLESHEET = """
+QWidget {
+    background-color: #1b1e23;
+    color: #d7dae0;
+    font-family: "Segoe UI";
+    font-size: 13px;
+}
+QMainWindow::separator { background: #2a2e36; width: 3px; height: 3px; }
+QToolBar {
+    background: #23272e;
+    border: none;
+    border-bottom: 1px solid #2f343d;
+    spacing: 4px;
+    padding: 4px;
+}
+QToolButton {
+    background: transparent;
+    border-radius: 6px;
+    padding: 5px 10px;
+    color: #d7dae0;
+}
+QToolButton:hover { background: #2f3540; }
+QToolButton:pressed { background: #3b4252; }
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #2f3540, stop:1 #262b33);
+    border: 1px solid #3c4350;
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #e2e6ec;
+}
+QPushButton:hover { border-color: #4f9cf9; background: #333a46; }
+QPushButton:pressed { background: #1f242b; }
+QPushButton:disabled { color: #6b7280; background: #23272e; }
+QGroupBox {
+    background: #20242b;
+    border: 1px solid #2f343d;
+    border-radius: 8px;
+    margin-top: 14px;
+    padding-top: 10px;
+    font-weight: 600;
+    color: #9fd0ff;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 4px;
+}
+QLineEdit, QSpinBox, QComboBox, QPlainTextEdit {
+    background: #14171c;
+    border: 1px solid #333a45;
+    border-radius: 5px;
+    padding: 4px 6px;
+    selection-background-color: #4f9cf9;
+    selection-color: #ffffff;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #4f9cf9; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView {
+    background: #1b1f26;
+    border: 1px solid #333a45;
+    selection-background-color: #4f9cf9;
+}
+QCheckBox { spacing: 6px; color: #c9ced6; }
+QCheckBox::indicator {
+    width: 15px;
+    height: 15px;
+    border: 1px solid #3c4350;
+    border-radius: 4px;
+    background: #14171c;
+}
+QCheckBox::indicator:checked {
+    background: #4f9cf9;
+    border-color: #4f9cf9;
+}
+QLabel { color: #c9ced6; background: transparent; }
+QDockWidget { color: #9fd0ff; font-weight: 600; }
+QDockWidget::title {
+    background: #23272e;
+    padding: 6px;
+    border-bottom: 1px solid #2f343d;
+}
+QScrollBar:vertical {
+    background: #16191e;
+    width: 10px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical {
+    background: #333a45;
+    min-height: 24px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical:hover { background: #4f9cf9; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar:horizontal {
+    background: #16191e;
+    height: 10px;
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal {
+    background: #333a45;
+    min-width: 24px;
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal:hover { background: #4f9cf9; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QMessageBox, QDialog { background: #1b1e23; }
+QMenu { background: #23272e; border: 1px solid #333a45; }
+QMenu::item:selected { background: #4f9cf9; }
+QToolTip {
+    background: #23272e;
+    color: #d7dae0;
+    border: 1px solid #333a45;
+}
+"""
+
+
 def main():
     app = QApplication(sys.argv)
+    app.setStyleSheet(STYLESHEET)
+    try:
+        icon_path = os.path.join(
+            os.path.dirname(os.path.abspath(sys.argv[0])), "app.ico")
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+    except Exception:
+        pass
     w = MainWindow()
     w.show()
     sys.exit(app.exec_())

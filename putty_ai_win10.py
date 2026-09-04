@@ -885,6 +885,9 @@ class MainWindow(QMainWindow):
         self.chk_autopilot = QCheckBox(
             "Полное управление (автопилот: без подтверждений шагов)")
         self.chk_autopilot.setChecked(False)
+        self.chk_autoanalysis = QCheckBox(
+            "При подключении сразу запускать полный анализ")
+        self.chk_autoanalysis.setChecked(False)
         row0 = QHBoxLayout()
         row0.addWidget(QLabel("Макс. шагов:"))
         self.agent_steps_spin = QSpinBox()

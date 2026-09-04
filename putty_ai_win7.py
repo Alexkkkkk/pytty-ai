@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PuTTY-AI (Windows 7 edition) — SSH-клиент с ИИ-помощником.
-
-Совместимость: Windows 7 + Python 3.8 + PyQt5.
+PuTTY-AI — SSH-клиент с ИИ-помощником (Win7).
 
 Возможности:
   - подключение по SSH (пароль или ключ);
   - терминал с историей команд (стрелки вверх/вниз);
   - ИИ: объяснение вывода/ошибок, подбор команды по описанию,
     автодополнение по Tab;
-  - ИИ работает через OpenAI-совместимый API.
+  - ИИ работает через OpenAI-совместимый API (Ollama локально или OpenAI).
 
-Запуск:  python putty_ai_win7.py
+Запуск:  python putty_ai.py
 """
 
 import sys
+import os
 import json
 import socket
 import urllib.request
@@ -28,10 +27,10 @@ except ImportError:
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QPushButton, QLabel, QPlainTextEdit,
-    QToolBar, QDockWidget, QMessageBox, QFileDialog, QGroupBox, QAction
+    QToolBar, QDockWidget, QMessageBox, QFileDialog, QGroupBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5.QtGui import QAction, QFont, QTextCursor
 
 
 # ---------------------------------------------------------------------------
@@ -48,17 +47,18 @@ class Terminal(QPlainTextEdit):
         self.setFont(QFont("Consolas", 11))
         self.setStyleSheet(
             "QPlainTextEdit { background: #1e1e1e; color: #d4d4d4; }")
+        self.setReadOnly(False)
         self.buffer = ""       # текущая вводимая строка (локальное эхо)
         self.history = []
         self.hist_idx = 0
         self.connected = False
 
-    def set_connected(self, flag):
+    def set_connected(self, flag: bool):
         self.connected = flag
         self.buffer = ""
 
     # ---- вывод от сервера ----
-    def insert_remote(self, text):
+    def insert_remote(self, text: str):
         self.moveCursor(QTextCursor.End)
         self.insertPlainText(text)
         self.moveCursor(QTextCursor.End)
@@ -69,7 +69,7 @@ class Terminal(QPlainTextEdit):
         return "\n".join(self.toPlainText().splitlines()[-n:])
 
     # ---- локальное редактирование ----
-    def _replace_buffer(self, new):
+    def _replace_buffer(self, new: str):
         """Стереть набранную строку с экрана и показать новую (история)."""
         self.moveCursor(QTextCursor.End)
         tc = self.textCursor()
@@ -78,7 +78,7 @@ class Terminal(QPlainTextEdit):
         self.buffer = new
         self.insertPlainText(new)
 
-    def insert_suggestion(self, rest):
+    def insert_suggestion(self, rest: str):
         """Вставить автодополнение (и показать, и отправить на сервер)."""
         if not rest:
             return
@@ -92,16 +92,16 @@ class Terminal(QPlainTextEdit):
 
         # Ctrl+C / Ctrl+L
         if mods & Qt.ControlModifier:
-            if key == Qt.Key_C:
+            if key == Qt.Key.Key_C:
                 self.sendText.emit("\x03")
                 self.buffer = ""
                 return
-            if key == Qt.Key_L:
+            if key == Qt.Key.Key_L:
                 self.clear()
                 return
 
         # Enter
-        if key in (Qt.Key_Return, Qt.Key_Enter):
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if self.buffer.strip():
                 self.history.append(self.buffer)
             self.hist_idx = len(self.history)
@@ -110,7 +110,7 @@ class Terminal(QPlainTextEdit):
             return
 
         # Backspace
-        if key == Qt.Key_Backspace:
+        if key == Qt.Key.Key_Backspace:
             if self.buffer:
                 self.buffer = self.buffer[:-1]
                 self.sendText.emit("\x7f")
@@ -119,12 +119,12 @@ class Terminal(QPlainTextEdit):
             return
 
         # История
-        if key == Qt.Key_Up:
+        if key == Qt.Key.Key_Up:
             if self.hist_idx > 0:
                 self.hist_idx -= 1
                 self._replace_buffer(self.history[self.hist_idx])
             return
-        if key == Qt.Key_Down:
+        if key == Qt.Key.Key_Down:
             if self.hist_idx < len(self.history) - 1:
                 self.hist_idx += 1
                 self._replace_buffer(self.history[self.hist_idx])
@@ -134,7 +134,7 @@ class Terminal(QPlainTextEdit):
             return
 
         # Tab -> автодополнение через ИИ
-        if key == Qt.Key_Tab:
+        if key == Qt.Key.Key_Tab:
             if self.buffer.strip():
                 self.autocompleteRequested.emit(self.buffer)
             return
@@ -200,7 +200,7 @@ class SshWorker(QThread):
             return
         self.disconnected.emit("")
 
-    def send(self, text):
+    def send(self, text: str):
         if self.channel:
             try:
                 self.channel.send(text)
@@ -260,7 +260,7 @@ class AiWorker(QThread):
 class ConnectDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(u"Подключение по SSH")
+        self.setWindowTitle("Подключение по SSH")
         self.setMinimumWidth(360)
         lay = QFormLayout(self)
 
@@ -272,22 +272,22 @@ class ConnectDialog(QDialog):
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
         self.keyfile = QLineEdit()
-        btn_browse = QPushButton(u"…")
+        btn_browse = QPushButton("…")
         btn_browse.setFixedWidth(32)
         btn_browse.clicked.connect(self._browse)
         row = QHBoxLayout()
         row.addWidget(self.keyfile)
         row.addWidget(btn_browse)
 
-        lay.addRow(u"Хост:", self.host)
-        lay.addRow(u"Порт:", self.port)
-        lay.addRow(u"Пользователь:", self.user)
-        lay.addRow(u"Пароль / passphrase:", self.password)
-        lay.addRow(u"Ключ (необяз.):", row)
+        lay.addRow("Хост:", self.host)
+        lay.addRow("Порт:", self.port)
+        lay.addRow("Пользователь:", self.user)
+        lay.addRow("Пароль / passphrase:", self.password)
+        lay.addRow("Ключ (необяз.):", row)
 
         btns = QHBoxLayout()
-        ok = QPushButton(u"Подключиться")
-        cancel = QPushButton(u"Отмена")
+        ok = QPushButton("Подключиться")
+        cancel = QPushButton("Отмена")
         ok.clicked.connect(self.accept)
         cancel.clicked.connect(self.reject)
         btns.addStretch(1)
@@ -296,17 +296,17 @@ class ConnectDialog(QDialog):
         lay.addRow(btns)
 
     def _browse(self):
-        path, _ = QFileDialog.getOpenFileName(self, u"Приватный ключ")
+        path, _ = QFileDialog.getOpenFileName(self, "Приватный ключ")
         if path:
             self.keyfile.setText(path)
 
 
 class AiSettingsDialog(QDialog):
-    """Настройки ИИ."""
+    """Настройки ИИ: по умолчанию локальная Ollama."""
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(u"Настройки ИИ")
+        self.setWindowTitle("Настройки ИИ")
         self.setMinimumWidth(420)
         lay = QFormLayout(self)
 
@@ -315,16 +315,16 @@ class AiSettingsDialog(QDialog):
         self.key.setEchoMode(QLineEdit.Password)
         self.model = QLineEdit(settings["model"])
 
-        lay.addRow(u"API URL:", self.base)
-        lay.addRow(u"API-ключ:", self.key)
-        lay.addRow(u"Модель:", self.model)
+        lay.addRow("API URL:", self.base)
+        lay.addRow("API-ключ:", self.key)
+        lay.addRow("Модель:", self.model)
         lay.addRow(QLabel(
-            u"OpenAI: https://api.openai.com/v1 + ваш ключ.\n"
-            u"Свой сервер: любой OpenAI-совместимый endpoint."))
+            "Локально (Ollama): http://localhost:11434/v1, ключ пустой.\n"
+            "OpenAI: https://api.openai.com/v1 + ваш ключ."))
 
         btns = QHBoxLayout()
-        ok = QPushButton(u"Сохранить")
-        cancel = QPushButton(u"Отмена")
+        ok = QPushButton("Сохранить")
+        cancel = QPushButton("Отмена")
         ok.clicked.connect(self.accept)
         cancel.clicked.connect(self.reject)
         btns.addStretch(1)
@@ -339,7 +339,7 @@ class AiSettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(u"PuTTY-AI — SSH-клиент с ИИ-помощником (Win7)")
+        self.setWindowTitle("PuTTY-AI — SSH-клиент с ИИ-помощником (Win7)")
         self.resize(1000, 640)
 
         self.settings = {
@@ -347,6 +347,9 @@ class MainWindow(QMainWindow):
             "api_key": "",
             "model": "gpt-4o-mini",
         }
+        # --- база знаний по U-Boot (файл u_boot_errors_kb.md рядом с программой) ---
+        self.kb_text = self._load_kb()
+
         self.ssh = None
         self._ai_busy = False
         self._ac_cache = {}
@@ -354,8 +357,8 @@ class MainWindow(QMainWindow):
         # --- терминал ---
         self.term = Terminal()
         self.term.insert_remote(
-            u"PuTTY-AI (Win7)\nПодключитесь через «Подключиться».\n"
-            u"ИИ-помощник: правая панель, автодополнение по Tab.\n\n")
+            "PuTTY-AI\nПодключитесь через меню «Подключение».\n"
+            "ИИ-помощник: правая панель, автодополнение по Tab.\n\n")
         self.setCentralWidget(self.term)
 
         self.term.sendText.connect(self._send_to_server)
@@ -367,16 +370,16 @@ class MainWindow(QMainWindow):
 
     # ---------- UI ----------
     def _build_toolbar(self):
-        tb = QToolBar(u"Главная")
+        tb = QToolBar("Главная")
         self.addToolBar(tb)
 
-        act_connect = QAction(u"Подключиться", self)
+        act_connect = QAction("Подключиться", self)
         act_connect.triggered.connect(self.connect_ssh)
-        act_disconnect = QAction(u"Отключиться", self)
+        act_disconnect = QAction("Отключиться", self)
         act_disconnect.triggered.connect(self.disconnect_ssh)
-        act_ai = QAction(u"Настройки ИИ", self)
+        act_ai = QAction("Настройки ИИ", self)
         act_ai.triggered.connect(self.edit_ai_settings)
-        act_exit = QAction(u"Выход", self)
+        act_exit = QAction("Выход", self)
         act_exit.triggered.connect(self.close)
 
         tb.addAction(act_connect)
@@ -391,25 +394,25 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(panel)
 
         # -- объяснение вывода --
-        g1 = QGroupBox(u"Объяснить вывод терминала")
+        g1 = QGroupBox("Объяснить вывод терминала")
         l1 = QVBoxLayout(g1)
-        btn_explain = QPushButton(u"Объяснить / найти ошибки")
+        btn_explain = QPushButton("Объяснить / найти ошибки")
         btn_explain.clicked.connect(self.explain_output)
         l1.addWidget(btn_explain)
 
         # -- подбор команды --
-        g2 = QGroupBox(u"Спросить ИИ: какую команду ввести?")
+        g2 = QGroupBox("Спросить ИИ: какую команду ввести?")
         l2 = QVBoxLayout(g2)
         self.ask_input = QLineEdit()
         self.ask_input.setPlaceholderText(
-            u"например: найти все файлы больше 100 МБ")
-        btn_ask = QPushButton(u"Подобрать команду")
+            "например: найти все файлы больше 100 МБ")
+        btn_ask = QPushButton("Подобрать команду")
         btn_ask.clicked.connect(self.suggest_command)
-        self.suggestion = QLabel(u"—")
+        self.suggestion = QLabel("—")
         self.suggestion.setWordWrap(True)
         self.suggestion.setStyleSheet(
             "QLabel { color: #2e7d32; font-family: Consolas; }")
-        btn_insert = QPushButton(u"Вставить в терминал")
+        btn_insert = QPushButton("Вставить в терминал")
         btn_insert.clicked.connect(self._insert_suggestion)
         l2.addWidget(self.ask_input)
         l2.addWidget(btn_ask)
@@ -417,7 +420,7 @@ class MainWindow(QMainWindow):
         l2.addWidget(btn_insert)
 
         # -- журнал ответов ИИ --
-        g3 = QGroupBox(u"Ответы ИИ")
+        g3 = QGroupBox("Ответы ИИ")
         l3 = QVBoxLayout(g3)
         self.ai_output = QPlainTextEdit()
         self.ai_output.setReadOnly(True)
@@ -428,19 +431,19 @@ class MainWindow(QMainWindow):
         lay.addWidget(g2)
         lay.addWidget(g3)
 
-        dock = QDockWidget(u"ИИ-помощник")
+        dock = QDockWidget("ИИ-помощник")
         dock.setWidget(panel)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
 
     # ---------- SSH ----------
     def connect_ssh(self):
         if paramiko is None:
-            QMessageBox.critical(self, u"Ошибка",
-                                 u"Не установлен пакет paramiko:\n"
-                                 u"pip install paramiko")
+            QMessageBox.critical(self, "Ошибка",
+                                 "Не установлен пакет paramiko:\n"
+                                 "pip install paramiko")
             return
         if self.ssh and self.ssh.isRunning():
-            QMessageBox.information(self, "SSH", u"Уже подключено.")
+            QMessageBox.information(self, "SSH", "Уже подключено.")
             return
         dlg = ConnectDialog(self)
         if dlg.exec_() != QDialog.Accepted:
@@ -459,14 +462,14 @@ class MainWindow(QMainWindow):
             self.ssh.wait(2000)
             self.ssh = None
         self.term.set_connected(False)
-        self.term.insert_remote(u"\n[отключено]\n")
+        self.term.insert_remote("\n[отключено]\n")
 
     def _on_disconnected(self, err):
         self.term.set_connected(False)
         if err:
-            self.term.insert_remote(u"\n[ошибка SSH: %s]\n" % err)
+            self.term.insert_remote(f"\n[ошибка SSH: {err}]\n")
         else:
-            self.term.insert_remote(u"\n[соединение закрыто]\n")
+            self.term.insert_remote("\n[соединение закрыто]\n")
 
     def _send_to_server(self, text):
         if self.ssh and self.ssh.isRunning():
@@ -483,10 +486,11 @@ class MainWindow(QMainWindow):
     def _ai_available(self):
         if not self.settings["base_url"]:
             QMessageBox.information(
-                self, u"ИИ", u"Задайте URL ИИ в «Настройки ИИ».")
+                self, "ИИ", "Задайте URL ИИ в «Настройки ИИ».\n"
+                            "Для локальной Ollama: http://localhost:11434/v1")
             return False
         if self._ai_busy:
-            self.ai_output.appendPlainText(u"…ИИ занят, подождите…")
+            self.ai_output.appendPlainText("…ИИ занят, подождите…")
             return False
         return True
 
@@ -500,7 +504,7 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def _ai_error(self, err):
-        self.ai_output.appendPlainText(u"[ошибка ИИ: %s]\n" % err)
+        self.ai_output.appendPlainText(f"[ошибка ИИ: {err}]\n")
 
     # -- объяснение вывода --
     def explain_output(self):
@@ -508,13 +512,10 @@ class MainWindow(QMainWindow):
             return
         output = self.term.last_output()
         messages = [
-            {"role": "system", "content":
-                u"Ты помощник в терминале Linux. Объясни по-русски кратко: "
-                u"есть ли в выводе ошибки, почему они возникли и как "
-                u"исправить. Если всё в порядке — скажи об этом одной фразой."},
+            {"role": "system", "content": self._system_prompt()},
             {"role": "user", "content": output},
         ]
-        self.ai_output.appendPlainText(u"— анализ вывода…\n")
+        self.ai_output.appendPlainText("— анализ вывода…\n")
         self._ask_ai(messages, self._show_explanation)
 
     def _show_explanation(self, text):
@@ -530,14 +531,14 @@ class MainWindow(QMainWindow):
         context = self.term.last_output(20)
         messages = [
             {"role": "system", "content":
-                u"Ты помощник в терминале Linux. Пользователь описывает "
-                u"задачу — верни ТОЛЬКО одну команду bash без пояснений, "
-                u"без markdown и без кавычек вокруг команды."},
+                "Ты помощник в терминале Linux. Пользователь описывает "
+                "задачу — верни ТОЛЬКО одну команду bash без пояснений, "
+                "без markdown и без кавычек вокруг команды."},
             {"role": "user", "content":
-                u"Контекст (последний вывод терминала):\n%s\n\n"
-                u"Задача: %s" % (context, wish)},
+                f"Контекст (последний вывод терминала):\n{context}\n\n"
+                f"Задача: {wish}"},
         ]
-        self.suggestion.setText(u"…думаю…")
+        self.suggestion.setText("…думаю…")
         self._ask_ai(messages, self._show_suggestion)
 
     def _show_suggestion(self, text):
@@ -549,6 +550,7 @@ class MainWindow(QMainWindow):
         cmd = getattr(self, "_pending_cmd", "")
         if not cmd:
             return
+        # вставляем, только если терминал не занят своей строкой
         if self.term.buffer.strip():
             self.term.insert_remote("\n")
             self.term.buffer = ""
@@ -569,18 +571,16 @@ class MainWindow(QMainWindow):
             return
         context = self.term.last_output(20)
         messages = [
-            {"role": "system", "content":
-                u"Дополни начало команды bash. Ответь ТОЛЬКО продолжением "
-                u"текста (без повтора введённого), либо пустой строкой, "
-                u"если не уверен. Без пояснений и markdown."},
+            {"role": "system", "content": self._ac_prompt()},
             {"role": "user", "content":
-                u"Контекст:\n%s\n\nНачало команды: %s" % (context, buf)},
+                f"Контекст:\n{context}\n\nНачало команды: {buf}"},
         ]
         holder = {"buf": buf}
 
         def on_result(text):
             rest = text.splitlines()[0] if text else ""
             rest = rest.strip()
+            # защита от повтора введённого текста
             if rest.startswith(holder["buf"]):
                 rest = rest[len(holder["buf"]):]
             self._ac_cache[holder["buf"]] = rest

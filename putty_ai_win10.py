@@ -14,6 +14,7 @@ PuTTY-AI — SSH-клиент с ИИ-помощником.
 """
 
 import sys
+import os
 import json
 import socket
 import urllib.request
@@ -346,6 +347,9 @@ class MainWindow(QMainWindow):
             "api_key": "",
             "model": "qwen2.5-coder",
         }
+        # --- база знаний по U-Boot (файл u_boot_errors_kb.md рядом с программой) ---
+        self.kb_text = self._load_kb()
+
         self.ssh = None
         self._ai_busy = False
         self._ac_cache = {}
@@ -508,10 +512,7 @@ class MainWindow(QMainWindow):
             return
         output = self.term.last_output()
         messages = [
-            {"role": "system", "content":
-                "Ты помощник в терминале Linux. Объясни по-русски кратко: "
-                "есть ли в выводе ошибки, почему они возникли и как "
-                "исправить. Если всё в порядке — скажи об этом одной фразой."},
+            {"role": "system", "content": self._system_prompt()},
             {"role": "user", "content": output},
         ]
         self.ai_output.appendPlainText("— анализ вывода…\n")
@@ -570,10 +571,7 @@ class MainWindow(QMainWindow):
             return
         context = self.term.last_output(20)
         messages = [
-            {"role": "system", "content":
-                "Дополни начало команды bash. Ответь ТОЛЬКО продолжением "
-                "текста (без повтора введённого), либо пустой строкой, "
-                "если не уверен. Без пояснений и markdown."},
+            {"role": "system", "content": self._ac_prompt()},
             {"role": "user", "content":
                 f"Контекст:\n{context}\n\nНачало команды: {buf}"},
         ]

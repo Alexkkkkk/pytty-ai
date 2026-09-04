@@ -35,6 +35,35 @@ from PyQt5.QtGui import QAction, QFont, QTextCursor, QGuiApplication, QColor
 
 
 # ---------------------------------------------------------------------------
+# Безопасность: команды, запрещённые для автоматического выполнения
+# ---------------------------------------------------------------------------
+# Полное стирание / форматирование флешек — НИКОГДА не выполняем автоматически
+DANGEROUS_CMDS = (
+    "mmc erase", "mmc format", "mmc rescan 1", "eraseall", "erase all",
+    "nand erase", "sf erase", "sf probe 0; sf erase",
+    "gpt write", "fdisk", "recovery_wipe", "recovery-wipe",
+    "wipe", "factory_reset", "factory reset",
+)
+# Опасная запись во флеш — только с двойным предупреждением
+RISKY_CMDS = (
+    "mmc write", "nand write", "sf write", "fatwrite", "sparse_write",
+    "usb2spi", "bin2emmc", "ursa_upgrade", "avbab disable-verity",
+)
+
+
+def _cmd_safety(cmd):
+    """('blocked'|'risky'|'ok', совпавший шаблон) для строки команды."""
+    low = cmd.lower().strip()
+    for p in DANGEROUS_CMDS:
+        if p in low:
+            return "blocked", p
+    for p in RISKY_CMDS:
+        if p in low:
+            return "risky", p
+    return "ok", ""
+
+
+# ---------------------------------------------------------------------------
 # Терминал
 # ---------------------------------------------------------------------------
 class Terminal(QPlainTextEdit):
@@ -690,6 +719,27 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(self.agent_delay_spin.value() * 1000,
                               self._agent_observe)
             return
+        level, pat = _cmd_safety(cmd)
+        if level == "blocked":
+            if not self.chk_danger.isChecked():
+                self.ai_output.appendPlainText(
+                    "⛔ Команда заблокирована правилами безопасности:\n"
+                    "> " + cmd + "\n")
+                self._agent_finish("остановлен: запрещённая команда (%s)" % pat)
+                return
+            ret = QMessageBox.warning(
+                self, "⛔ ОПАСНАЯ КОМАНДА",
+                "Команда может ПОЛНОСТЬЮ СТЕРЕТЬ флешку (eMMC/SPI/NAND)!\n\n"
+                "> " + cmd + "\n\nПродолжить на свой страх и риск?",
+                QMessageBox.StandardButton.Yes |
+                QMessageBox.StandardButton.No)
+            if ret != QMessageBox.Yes:
+                self._agent_finish("опасная команда отклонена пользователем")
+                return
+        elif level == "risky":
+            self.ai_output.appendPlainText(
+                "⚠ Внимание: команда записывает во флеш (%s)\n" % pat)
+
         if self.chk_confirm.isChecked():
             ret = QMessageBox.question(
                 self, "Авто-исправление — шаг %d" % (self._agent_steps + 1),
@@ -788,6 +838,7 @@ class MainWindow(QMainWindow):
         self.agent_status = QLabel("агент не запущен")
         self.agent_status.setWordWrap(True)
         l0.addWidget(self.chk_confirm)
+        l0.addWidget(self.chk_danger)
         l0.addLayout(row0)
         l0.addWidget(btn_agent)
         l0.addWidget(self.agent_status)
@@ -973,6 +1024,16 @@ class MainWindow(QMainWindow):
         cmd = getattr(self, "_pending_cmd", "")
         if not cmd:
             return
+        level, _pat = _cmd_safety(cmd)
+        if level != "ok":
+            ret = QMessageBox.warning(
+                self, "Опасная команда",
+                "Команда может повредить данные на флешке!\n\n> " + cmd +
+                "\n\nВыполнить?",
+                QMessageBox.StandardButton.Yes |
+                QMessageBox.StandardButton.No)
+            if ret != QMessageBox.Yes:
+                return
         # вставляем, только если терминал не занят своей строкой
         if self.term.buffer.strip():
             self.term.insert_remote("\n")

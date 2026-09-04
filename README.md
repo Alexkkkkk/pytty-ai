@@ -53,3 +53,22 @@ URL и модель, останется вставить ключ:
 pip install pyinstaller
 pyinstaller --onefile --noconsole --name "PuTTY-AI" --add-data "u_boot_errors_kb.md;." putty_ai.py
 ```
+
+## Компиляция в .exe — полный комплект
+
+В папке всё готово для сборки одним кликом:
+
+| Файл | Назначение |
+|------|-----------|
+| `build_exe_win10.bat` | сборка для Win10/11 (двойной клик) |
+| `build_exe_win7.bat` | сборка для Win7 (двойной клик) |
+| `PuTTY-AI.spec` | spec-файл PyInstaller (используется win10-скриптом) |
+| `requirements-build.txt` | зависимости для сборки Win10 |
+| `requirements-build-win7.txt` | зависимости для сборки Win7 |
+| `app.ico` | иконка программы (вшивается в exe) |
+| `learned_cases.md` | стартовый файл обучения (вшивается в exe, рядом с exe дописывается) |
+
+Просто запустите нужный .bat — он сам установит зависимости,
+соберёт exe и положит его в `dist\PuTTY-AI.exe`.
+
+Ручная сборка (Win10): `python -m PyInstaller --clean --noconfirm PuTTY-AI.spec`

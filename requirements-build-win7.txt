@@ -1,0 +1,4 @@
+PyQt5==5.15.11
+paramiko==3.4.1
+pyserial==3.5
+pyinstaller==5.13.2

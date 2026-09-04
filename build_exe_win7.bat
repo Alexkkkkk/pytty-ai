@@ -21,6 +21,9 @@ echo [2/3] Сборка .exe (2-5 минут)...
 python -m PyInstaller --onefile --noconsole --name "PuTTY-AI" ^
     --add-data "u_boot_errors_kb.md;." ^
     --add-data "learned_cases.md;." ^
+    --add-data "skills.json;." ^
+    --add-data "learned_rules.json;." ^
+    --add-data "user_patches.py;." ^
     --icon app.ico ^
     --hidden-import serial --hidden-import serial.tools.list_ports ^
     --hidden-import paramiko ^

@@ -27,14 +27,14 @@ try:
 except ImportError:
     paramiko = None
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
     QLabel, QPlainTextEdit, QTextEdit, QToolBar, QDockWidget, QMessageBox,
     QFileDialog, QGroupBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt5.QtGui import QAction, QFont, QTextCursor, QGuiApplication, QColor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QAction, QFont, QTextCursor, QGuiApplication, QColor
 
 
 def _load_json(path, default):
@@ -111,9 +111,9 @@ class Terminal(QPlainTextEdit):
 
     # ---- вывод от сервера ----
     def insert_remote(self, text: str):
-        self.moveCursor(QTextCursor.End)
+        self.moveCursor(QTextCursor.MoveOperation.End)
         self.insertPlainText(text)
-        self.moveCursor(QTextCursor.End)
+        self.moveCursor(QTextCursor.MoveOperation.End)
         sb = self.verticalScrollBar()
         sb.setValue(sb.maximum())
 
@@ -126,7 +126,7 @@ class Terminal(QPlainTextEdit):
         self.buffer = new
         if not self.local_echo:
             return
-        self.moveCursor(QTextCursor.End)
+        self.moveCursor(QTextCursor.MoveOperation.End)
         tc = self.textCursor()
         for _ in range(len(self.buffer)):
             tc.deletePreviousChar()
@@ -146,7 +146,7 @@ class Terminal(QPlainTextEdit):
         mods = e.modifiers()
 
         # Ctrl+C / Ctrl+L
-        if mods & Qt.ControlModifier:
+        if mods & Qt.KeyboardModifier.ControlModifier:
             if key == Qt.Key.Key_C:
                 self.sendText.emit("\x03")
                 self.buffer = ""
@@ -169,7 +169,7 @@ class Terminal(QPlainTextEdit):
             if self.buffer:
                 self.buffer = self.buffer[:-1]
                 self.sendText.emit("\x7f")
-                self.moveCursor(QTextCursor.End)
+                self.moveCursor(QTextCursor.MoveOperation.End)
                 self.textCursor().deletePreviousChar()
             return
 
@@ -196,7 +196,7 @@ class Terminal(QPlainTextEdit):
 
         # Печатные символы -> локальное эхо + отправка
         text = e.text()
-        if text and not (mods & Qt.ControlModifier):
+        if text and not (mods & Qt.KeyboardModifier.ControlModifier):
             self.buffer += text
             if self.local_echo:
                 self.insertPlainText(text)
@@ -377,7 +377,7 @@ class ConnectDialog(QDialog):
         self.port.setValue(22)
         self.user = QLineEdit()
         self.password = QLineEdit()
-        self.password.setEchoMode(QLineEdit.Password)
+        self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.keyfile = QLineEdit()
         btn_browse = QPushButton("…")
         btn_browse.setFixedWidth(32)
@@ -468,7 +468,7 @@ class AiSettingsDialog(QDialog):
 
         self.base = QLineEdit(settings["base_url"])
         self.key = QLineEdit(settings.get("api_key", ""))
-        self.key.setEchoMode(QLineEdit.Password)
+        self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.model = QLineEdit(settings["model"])
 
         lay.addRow("API URL:", self.base)
@@ -513,9 +513,9 @@ class MainWindow(QMainWindow):
         # --- настройки: из config.json (если есть) или по умолчанию ---
         self.config = self._load_config()
         self.settings = self.config.get("settings", {
-            "base_url": "https://api.groq.com/openai/v1",
+            "base_url": "http://localhost:11434/v1",   # Ollama по умолчанию
             "api_key": "",
-            "model": "llama-3.3-70b-versatile",
+            "model": "qwen2.5-coder",
         })
         self._conn = self.config.get("conn", {})
 
@@ -876,7 +876,7 @@ class MainWindow(QMainWindow):
 
     def _show_analysis(self, text):
         dlg = AnalysisDialog(text, self)
-        dlg.exec_()
+        dlg.exec()
 
     # ---------- Авто-исправление (агент) ----------
     def _agent_prompt(self):
@@ -977,7 +977,7 @@ class MainWindow(QMainWindow):
                 "> " + cmd + "\n\nПродолжить на свой страх и риск?",
                 QMessageBox.StandardButton.Yes |
                 QMessageBox.StandardButton.No)
-            if ret != QMessageBox.Yes:
+            if ret != QMessageBox.StandardButton.Yes:
                 self._agent_finish("опасная команда отклонена пользователем")
                 return
         elif level == "risky":
@@ -990,7 +990,7 @@ class MainWindow(QMainWindow):
                 "Выполнить команду?\n\n" + cmd,
                 QMessageBox.StandardButton.Yes |
                 QMessageBox.StandardButton.No)
-            if ret != QMessageBox.Yes:
+            if ret != QMessageBox.StandardButton.Yes:
                 self._agent_finish("отменено пользователем")
                 return
         self._agent_steps += 1
@@ -1186,7 +1186,7 @@ class MainWindow(QMainWindow):
 
         dock = QDockWidget("ИИ-помощник")
         dock.setWidget(panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
     # ---------- SSH ----------
     def connect_ssh(self):
@@ -1199,7 +1199,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "SSH", "Уже подключено.")
             return
         dlg = ConnectDialog(self)
-        if dlg.exec_() != QDialog.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self.ssh = SshWorker(dlg.host.text().strip(), dlg.port.value(),
                              dlg.user.text().strip(),
@@ -1240,7 +1240,7 @@ class MainWindow(QMainWindow):
     # ---------- ИИ ----------
     def edit_ai_settings(self):
         dlg = AiSettingsDialog(self.settings, self)
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             self.settings["base_url"] = dlg.base.text().strip()
             self.settings["api_key"] = dlg.key.text().strip()
             self.settings["model"] = dlg.model.text().strip()
@@ -1317,7 +1317,7 @@ class MainWindow(QMainWindow):
                 "\n\nВыполнить?",
                 QMessageBox.StandardButton.Yes |
                 QMessageBox.StandardButton.No)
-            if ret != QMessageBox.Yes:
+            if ret != QMessageBox.StandardButton.Yes:
                 return
         # вставляем, только если терминал не занят своей строкой
         if self.term.buffer.strip():
@@ -1374,7 +1374,7 @@ def main():
     app = QApplication(sys.argv)
     w = MainWindow()
     w.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

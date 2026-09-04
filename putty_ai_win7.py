@@ -27,11 +27,11 @@ except ImportError:
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
-    QLabel, QPlainTextEdit, QToolBar, QDockWidget, QMessageBox, QFileDialog,
-    QGroupBox, QAction
+    QLabel, QPlainTextEdit, QTextEdit, QToolBar, QDockWidget, QMessageBox,
+    QFileDialog, QGroupBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt5.QtGui import QAction, QFont, QTextCursor, QGuiApplication
+from PyQt5.QtGui import QAction, QFont, QTextCursor, QGuiApplication, QColor
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +53,8 @@ class Terminal(QPlainTextEdit):
         self.history = []
         self.hist_idx = 0
         self.connected = False
+        self.local_echo = True   # False для Serial (эхо даёт само устройство)
+        self.enter_seq = "\n"    # "\r" для Serial/U-Boot
 
     def set_connected(self, flag: bool):
         self.connected = flag
@@ -72,6 +74,9 @@ class Terminal(QPlainTextEdit):
     # ---- локальное редактирование ----
     def _replace_buffer(self, new: str):
         """Стереть набранную строку с экрана и показать новую (история)."""
+        self.buffer = new
+        if not self.local_echo:
+            return
         self.moveCursor(QTextCursor.End)
         tc = self.textCursor()
         for _ in range(len(self.buffer)):
@@ -144,7 +149,8 @@ class Terminal(QPlainTextEdit):
         text = e.text()
         if text and not (mods & Qt.ControlModifier):
             self.buffer += text
-            self.insertPlainText(text)
+            if self.local_echo:
+                self.insertPlainText(text)
             self.sendText.emit(text)
             return
 
@@ -222,6 +228,52 @@ class SshWorker(QThread):
 # ---------------------------------------------------------------------------
 # ИИ-поток (OpenAI-совместимый API)
 # ---------------------------------------------------------------------------
+class SerialWorker(QThread):
+    """Работа с COM-портом (UART) через pyserial — как PuTTY serial."""
+
+    dataReceived = pyqtSignal(str)
+    connected = pyqtSignal()
+    disconnected = pyqtSignal(str)
+
+    def __init__(self, port, baud, parent=None):
+        super().__init__(parent)
+        self.port_name, self.baud = port, baud
+        self._stop = False
+        self.ser = None
+
+    def run(self):
+        try:
+            self.ser = serial.Serial(self.port_name, self.baud, timeout=0.2)
+            self.connected.emit()
+            while not self._stop:
+                try:
+                    data = self.ser.read(4096)
+                except Exception:
+                    break
+                if data:
+                    self.dataReceived.emit(
+                        data.decode("utf-8", errors="replace"))
+        except Exception as ex:
+            self.disconnected.emit(str(ex))
+            return
+        self.disconnected.emit("")
+
+    def send(self, text):
+        if self.ser:
+            try:
+                self.ser.write(text.encode("utf-8", errors="ignore"))
+            except Exception:
+                pass
+
+    def stop(self):
+        self._stop = True
+        try:
+            if self.ser:
+                self.ser.close()
+        except Exception:
+            pass
+
+
 class AiWorker(QThread):
     result = pyqtSignal(str)
     failed = pyqtSignal(str)
@@ -261,9 +313,14 @@ class AiWorker(QThread):
 class ConnectDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Подключение по SSH")
-        self.setMinimumWidth(360)
+        self.setWindowTitle("Подключение")
+        self.setMinimumWidth(380)
         lay = QFormLayout(self)
+
+        self.conn_type = QComboBox()
+        self.conn_type.addItem("SSH (сервер)", "ssh")
+        self.conn_type.addItem("Serial (COM-порт / UART)", "serial")
+        lay.addRow("Тип:", self.conn_type)
 
         self.host = QLineEdit("127.0.0.1")
         self.port = QSpinBox()
@@ -286,6 +343,31 @@ class ConnectDialog(QDialog):
         lay.addRow("Пароль / passphrase:", self.password)
         lay.addRow("Ключ (необяз.):", row)
 
+        # --- Serial (COM-порт) ---
+        self.port_name = QComboBox()
+        self.port_name.setEditable(True)
+        try:
+            from serial.tools import list_ports
+            for p in list_ports.comports():
+                self.port_name.addItem(p.device)
+        except Exception:
+            pass
+        self.baud = QComboBox()
+        self.baud.setEditable(True)
+        for b in ("115200", "57600", "38400", "19200", "9600"):
+            self.baud.addItem(b)
+        row_s = QHBoxLayout()
+        row_s.addWidget(self.port_name)
+        row_s.addWidget(QLabel("Скорость:"))
+        row_s.addWidget(self.baud)
+        lay.addRow("Порт:", row_s)
+
+        self._ssh_widgets = [self.host, self.port, self.user,
+                             self.password, self.keyfile, btn_browse]
+        self._serial_widgets = [self.port_name, self.baud]
+        self.conn_type.currentIndexChanged.connect(self._toggle_type)
+        self._toggle_type(0)
+
         btns = QHBoxLayout()
         ok = QPushButton("Подключиться")
         cancel = QPushButton("Отмена")
@@ -295,6 +377,13 @@ class ConnectDialog(QDialog):
         btns.addWidget(ok)
         btns.addWidget(cancel)
         lay.addRow(btns)
+
+    def _toggle_type(self, _):
+        ssh = self.conn_type.currentData() == "ssh"
+        for w in self._ssh_widgets:
+            w.setEnabled(ssh)
+        for w in self._serial_widgets:
+            w.setEnabled(not ssh)
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(self, "Приватный ключ")
@@ -512,6 +601,7 @@ class MainWindow(QMainWindow):
             return
         QGuiApplication.clipboard().setText(cmds[i])
         self._script_idx = i + 1
+        self._highlight_step(self._script_idx - 1)
         self.ai_output.appendPlainText("шаг %d/%d скопирован: %s\n"
                                        % (i + 1, len(cmds), cmds[i]))
 
@@ -637,7 +727,8 @@ class MainWindow(QMainWindow):
             self.term.buffer = ""
         for ch in cmd:
             self.term.buffer += ch
-            self.term.insertPlainText(ch)
+            if self.term.local_echo:
+                self.term.insertPlainText(ch)
             self._send_to_server(ch)
         self.term.insert_remote("\n")
         self._send_to_server("\n")
@@ -736,9 +827,33 @@ class MainWindow(QMainWindow):
         self.ai_output.setFont(QFont("Consolas", 10))
         l3.addWidget(self.ai_output)
 
+        # -- сценарий восстановления --
+        g4 = QGroupBox("Сценарий восстановления (ИИ пишет последовательность команд)")
+        l4 = QVBoxLayout(g4)
+        self.script_view = QPlainTextEdit()
+        self.script_view.setReadOnly(True)
+        self.script_view.setFont(QFont("Consolas", 10))
+        self.script_view.setMaximumHeight(160)
+        row4 = QHBoxLayout()
+        btn_script = QPushButton("Создать сценарий")
+        btn_script.clicked.connect(self._make_script)
+        btn_copy_script = QPushButton("Копировать всё")
+        btn_copy_script.clicked.connect(self._copy_script)
+        self.btn_next_step = QPushButton("Следующий шаг")
+        self.btn_next_step.clicked.connect(self._copy_next_step)
+        btn_save_script = QPushButton("Сохранить")
+        btn_save_script.clicked.connect(self._save_script)
+        row4.addWidget(btn_script)
+        row4.addWidget(btn_copy_script)
+        row4.addWidget(self.btn_next_step)
+        row4.addWidget(btn_save_script)
+        l4.addLayout(row4)
+        l4.addWidget(self.script_view)
+
         lay.addWidget(g1)
         lay.addWidget(g2)
         lay.addWidget(g3)
+        lay.addWidget(g4)
 
         dock = QDockWidget("ИИ-помощник")
         dock.setWidget(panel)
@@ -771,6 +886,8 @@ class MainWindow(QMainWindow):
             self.ssh.wait(2000)
             self.ssh = None
         self.term.set_connected(False)
+        self.term.local_echo = True
+        self.term.enter_seq = "\n"
         self.term.insert_remote("\n[отключено]\n")
 
     def _on_disconnected(self, err):
@@ -862,7 +979,8 @@ class MainWindow(QMainWindow):
             self.term.buffer = ""
         for ch in cmd:
             self.term.buffer += ch
-            self.term.insertPlainText(ch)
+            if self.term.local_echo:
+                self.term.insertPlainText(ch)
             self._send_to_server(ch)
         self.term.insert_remote("\n")
         self._send_to_server("\n")

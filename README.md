@@ -1,7 +1,5 @@
 # PuTTY-AI v3 — SSH-клиент с ИИ: объясняет, подсказывает и САМ исправляет
 
-[![Build Windows executable](https://github.com/Alexkkkkk/pytty-ai/actions/workflows/build-windows.yml/badge.svg)](https://github.com/Alexkkkkk/pytty-ai/actions/workflows/build-windows.yml)
-
 ## Что нового в v3
 
 - 🤖 **Авто-исправление (агент)** — ИИ сам чинит ошибки: анализирует вывод
@@ -74,10 +72,3 @@ pyinstaller --onefile --noconsole --name "PuTTY-AI" --add-data "u_boot_errors_kb
 соберёт exe и положит его в `dist\PuTTY-AI.exe`.
 
 Ручная сборка (Win10): `python -m PyInstaller --clean --noconfirm PuTTY-AI.spec`
-
-### Сборка в GitHub Actions
-
-Каждый push в `main` автоматически запускает сборку на Windows runner.
-Готовый `PuTTY-AI.exe` доступен в разделе **Actions → Build Windows executable**
-в качестве артефакта `PuTTY-AI-windows`. Сборку также можно запустить вручную
-кнопкой **Run workflow**.

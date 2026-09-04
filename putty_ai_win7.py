@@ -706,6 +706,48 @@ class MainWindow(QMainWindow):
             self.ai_output.appendPlainText(
                 "⚠ ВНИМАНИЕ: команда записывает во флеш.\n")
 
+    # ---------- Обучение: сохранение удачных решений ----------
+    def _learn_success(self):
+        cmds = getattr(self, "_session_cmds", [])
+        if not cmds:
+            QMessageBox.information(
+                self, "Обучение",
+                "В этой сессии ещё не выполнялось команд — нечего сохранять.")
+            return
+        problem = self.term.last_output(25).strip()
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        lines = ["", "## Удачный случай (%s)" % stamp,
+                 "", "Проблема (фрагмент вывода терминала):", "",
+                 "```", problem, "```", "",
+                 "Решение (команды по порядку):", "", "```"]
+        lines.extend(cmds)
+        lines.extend(["```", ""])
+        entry = "\n".join(lines)
+        saved = None
+        dirs = [os.path.dirname(os.path.abspath(sys.argv[0]))]
+        if hasattr(sys, "_MEIPASS"):
+            dirs.append(sys._MEIPASS)
+        for d in dirs:
+            p = os.path.join(d, "learned_cases.md")
+            try:
+                with open(p, "a", encoding="utf-8") as f:
+                    f.write(entry)
+                saved = p
+                break
+            except OSError:
+                continue
+        if saved:
+            self.kb_text = self._load_kb()
+            self.ai_output.appendPlainText(
+                "— решение сохранено в базу знаний: %s\n" % saved)
+            QMessageBox.information(
+                self, "Обучение",
+                "Удачное решение записано в базу знаний.\n"
+                "В следующий раз ИИ сразу будет знать это решение.")
+        else:
+            self.ai_output.appendPlainText(
+                "[ошибка: не удалось записать learned_cases.md]\n")
+
     # ---------- Самообучение: навыки, правила, самопереписывание ----------
     def _load_user_patches(self):
         """Загружает user_patches.py — код, который ИИ написал сам себе."""
@@ -881,6 +923,44 @@ class MainWindow(QMainWindow):
         dlg = AnalysisDialog(text, self)
         dlg.exec_()
 
+    def _save_script(self):
+        text = self.script_view.toPlainText()
+        if not text:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить сценарий", "recovery_script.txt",
+            "Текстовые файлы (*.txt);;Все файлы (*)")
+        if path:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.ai_output.appendPlainText(
+                    "— сценарий сохранён: " + path + "\n")
+            except OSError as ex:
+                self.ai_output.appendPlainText(
+                    "[ошибка сохранения: %s]\n" % ex)
+
+    def _highlight_step(self, idx):
+        """Подсветить в списке строку текущего шага (0-based)."""
+        block = self.script_view.document().firstBlock()
+        n = -1
+        target = None
+        while block.isValid():
+            txt = block.text().strip()
+            if txt and not txt.startswith("#") and not txt.startswith("```"):
+                n += 1
+                if n == idx:
+                    target = block
+                    break
+            block = block.next()
+        if target is None:
+            return
+        sel = QTextEdit.ExtraSelection()
+        sel.format.setBackground(QColor("#2d5a27"))
+        sel.cursor = QTextCursor(target)
+        self.script_view.setExtraSelections([sel])
+        self.script_view.setTextCursor(QTextCursor(target))
+
     # ---------- Авто-исправление (агент) ----------
     def _agent_prompt(self):
         kb = ("\n\nБаза знаний (опирайся на неё):\n" + self.kb_text) \
@@ -978,8 +1058,8 @@ class MainWindow(QMainWindow):
                 self, "⛔ ОПАСНАЯ КОМАНДА",
                 "Команда может ПОЛНОСТЬЮ СТЕРЕТЬ флешку (eMMC/SPI/NAND)!\n\n"
                 "> " + cmd + "\n\nПродолжить на свой страх и риск?",
-                QMessageBox.StandardButton.Yes |
-                QMessageBox.StandardButton.No)
+                QMessageBox.Yes |
+                QMessageBox.No)
             if ret != QMessageBox.Yes:
                 self._agent_finish("опасная команда отклонена пользователем")
                 return
@@ -991,8 +1071,8 @@ class MainWindow(QMainWindow):
             ret = QMessageBox.question(
                 self, "Авто-исправление — шаг %d" % (self._agent_steps + 1),
                 "Выполнить команду?\n\n" + cmd,
-                QMessageBox.StandardButton.Yes |
-                QMessageBox.StandardButton.No)
+                QMessageBox.Yes |
+                QMessageBox.No)
             if ret != QMessageBox.Yes:
                 self._agent_finish("отменено пользователем")
                 return
@@ -1336,8 +1416,8 @@ class MainWindow(QMainWindow):
                 self, "Опасная команда",
                 "Команда может повредить данные на флешке!\n\n> " + cmd +
                 "\n\nВыполнить?",
-                QMessageBox.StandardButton.Yes |
-                QMessageBox.StandardButton.No)
+                QMessageBox.Yes |
+                QMessageBox.No)
             if ret != QMessageBox.Yes:
                 return
         # вставляем, только если терминал не занят своей строкой

@@ -17,9 +17,11 @@ import sys
 import os
 import ast
 import json
+import math
 import time
 import socket
 import shutil
+import subprocess
 import datetime
 import importlib.util
 import urllib.request
@@ -35,7 +37,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPlainTextEdit, QTextEdit, QToolBar, QDockWidget, QMessageBox,
     QFileDialog, QGroupBox, QListWidget, QListWidgetItem
 )
-from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, QEventLoop, pyqtSignal
 from PyQt6.QtGui import (
     QAction, QFont, QIcon, QKeySequence, QShortcut, QDesktopServices,
     QTextCursor, QGuiApplication, QColor
@@ -411,6 +413,7 @@ class ConnectDialog(QDialog):
         self.conn_type = QComboBox()
         self.conn_type.addItem("SSH (сервер)", "ssh")
         self.conn_type.addItem("Serial (COM-порт / UART)", "serial")
+        self.conn_type.addItem("Эмулятор (тренировка без железа)", "mock")
         lay.addRow("Тип:", self.conn_type)
 
         self.host = QLineEdit("127.0.0.1")
@@ -453,6 +456,23 @@ class ConnectDialog(QDialog):
         row_s.addWidget(self.baud)
         lay.addRow("Порт:", row_s)
 
+        # подстановка сохранённого подключения
+        if conn:
+            try:
+                self.host.setText(str(conn.get("host", "127.0.0.1")))
+                self.port.setValue(int(conn.get("port", 22)))
+                self.user.setText(str(conn.get("user", "")))
+                if conn.get("type") == "serial":
+                    self.conn_type.setCurrentIndex(1)
+                elif conn.get("type") == "mock":
+                    self.conn_type.setCurrentIndex(2)
+                if conn.get("port_name"):
+                    self.port_name.setCurrentText(str(conn.get("port_name")))
+                if conn.get("baud"):
+                    self.baud.setCurrentText(str(conn.get("baud")))
+            except (AttributeError, TypeError, ValueError):
+                pass
+
         self._ssh_widgets = [self.host, self.port, self.user,
                              self.password, self.keyfile, btn_browse]
         self._serial_widgets = [self.port_name, self.baud]
@@ -487,9 +507,36 @@ PROVIDERS = [
      "http://localhost:11434/v1", "qwen2.5-coder"),
     ("Groq (очень быстро, есть бесплатный лимит)",
      "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+    ("llamafile (1 файл, офлайн, работает без установки)",
+     "http://localhost:8080/v1", "llamafile"),
     ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
     ("Свой сервер (OpenAI-совместимый)", None, None),
 ]
+
+
+class AnalysisDialog(QDialog):
+    """Окно с полным отчётом анализа устройства."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Полный анализ устройства")
+        self.resize(580, 520)
+        lay = QVBoxLayout(self)
+        view = QPlainTextEdit()
+        view.setReadOnly(True)
+        view.setFont(QFont("Consolas", 10))
+        view.setPlainText(text)
+        lay.addWidget(view)
+        row = QHBoxLayout()
+        btn_copy = QPushButton("Копировать отчёт")
+        btn_copy.clicked.connect(
+            lambda: QGuiApplication.clipboard().setText(text))
+        btn_ok = QPushButton("Закрыть")
+        btn_ok.clicked.connect(self.accept)
+        row.addStretch(1)
+        row.addWidget(btn_copy)
+        row.addWidget(btn_ok)
+        lay.addLayout(row)
 
 
 class AiSettingsDialog(QDialog):
@@ -523,12 +570,26 @@ class AiSettingsDialog(QDialog):
         lay.addRow("Запасной URL:", self.base2)
         lay.addRow("Запасной ключ:", self.key2)
         lay.addRow("Запасная модель:", self.model2)
+        self.llamafile_path = QLineEdit(settings.get("llamafile_path", ""))
+        btn_lf = QPushButton("…")
+        btn_lf.setFixedWidth(32)
+        btn_lf.clicked.connect(self._browse_llamafile)
+        row_lf = QHBoxLayout()
+        row_lf.addWidget(self.llamafile_path)
+        row_lf.addWidget(btn_lf)
+        lay.addRow("llamafile.exe:", row_lf)
         lay.addRow(QLabel(
             "Ollama (Win10+): http://localhost:11434/v1, ключ пустой.\n"
             "Groq: ключ с https://console.groq.com/keys (регистрация бесплатно).\n"
             "  Модели Groq: llama-3.3-70b-versatile (умная),\n"
             "  llama-3.1-8b-instant (самая быстрая), qwen-qwq-32b (рассуждения).\n"
             "OpenAI: https://api.openai.com/v1 + ваш ключ."))
+
+    def _browse_llamafile(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "llamafile.exe", "", "Исполняемые файлы (*.exe)")
+        if path:
+            self.llamafile_path.setText(path)
 
     def _apply_preset(self, idx):
         if idx <= 0:
@@ -548,6 +609,94 @@ class AiSettingsDialog(QDialog):
         btns.addWidget(ok)
         btns.addWidget(cancel)
         lay.addRow(btns)
+
+
+def _cosine(a, b):
+    """Косинусная близость двух векторов (семантический поиск навыков)."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a)) or 1.0
+    nb = math.sqrt(sum(x * x for x in b)) or 1.0
+    return dot / (na * nb)
+
+
+class MockDevice(QThread):
+    """Имитатор консоли U-Boot M7332 для офлайн-тренировки агента."""
+
+    dataReceived = pyqtSignal(str)
+    connected = pyqtSignal()
+    disconnected = pyqtSignal(str)
+
+    BOOT_BAD = ("\nMStar/SigmaStar U-Boot 2011.12\n"
+                "** Bad signature on 0:1: expected 0x5840, got 0x0000 **\n"
+                "** partition 0 not valid on device 0 **\n"
+                "** unable to use usb 0:0 for fatload **\n"
+                "reading upgrade_image.pkg\n"
+                '** unable to read "upgrade_image.pkg" from usb 0:1 **\n'
+                "jump_to_console start!!\n"
+                "<< M7332 >># ")
+    BOOT_GOOD = ("\nMStar/SigmaStar U-Boot 2011.12\n"
+                 "USB: scanning bus... 1 storage device(s) found\n"
+                 "booting kernel...\nOK\n<< M7332 >># ")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._stop = False
+        self.usb_ready = False
+
+    def run(self):
+        self.connected.emit()
+        self.msleep(400)
+        self.dataReceived.emit(self.BOOT_BAD)
+        while not self._stop:
+            self.msleep(100)
+        self.disconnected.emit("")
+
+    def send(self, text):
+        t = text.strip()
+        if not t:
+            return
+        low = t.lower()
+        if low == "usb start":
+            self.usb_ready = True
+            self.dataReceived.emit(
+                "\nUSB: scanning bus for devices... 1 storage device(s) "
+                "found\n<< M7332 >># ")
+        elif low.startswith("fatls"):
+            if self.usb_ready:
+                self.dataReceived.emit(
+                    "\n  upgrade_image.pkg      81234567 bytes\n"
+                    "1 file(s) read\n<< M7332 >># ")
+            else:
+                self.dataReceived.emit("\n** No boot device **\n"
+                                       "<< M7332 >># ")
+        elif "ustar" in low or "upgrade_to_emmc" in low:
+            if self.usb_ready:
+                self.dataReceived.emit("\nreading upgrade_image.pkg ...\n")
+                for pct in (25, 50, 75, 100):
+                    self.msleep(250)
+                    self.dataReceived.emit("writing emmc ... %d%%\n" % pct)
+                self.dataReceived.emit("upgrade ok\n")
+                self.msleep(200)
+                self.dataReceived.emit(self.BOOT_GOOD)
+            else:
+                self.dataReceived.emit("\n** No boot device **\n"
+                                       "<< M7332 >># ")
+        elif low == "reset":
+            self.dataReceived.emit("\nresetting...\n")
+            self.msleep(200)
+            self.dataReceived.emit(self.BOOT_GOOD)
+        elif low == "help":
+            self.dataReceived.emit(
+                "\nusb start|stop|tree|part, fatls, ustar, "
+                "usb_super_upgrade_to_emmc, reset\n<< M7332 >># ")
+        else:
+            self.dataReceived.emit("\nUnknown command '%s'\n<< M7332 >># "
+                                   % t)
+
+    def stop(self):
+        self._stop = True
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +740,14 @@ class MainWindow(QMainWindow):
         self._session_log = None
         self._start_session_log()
         QTimer.singleShot(2000, self._check_update)
+
+        # --- семантическая память, ватчдог, бригада ---
+        self._vec_cache = {}
+        self._out_vec = (0.0, None)
+        self._err_history = []
+        self._wd_fired = set()
+        self._last_verify_score = None
+        QTimer.singleShot(3000, self._curriculum_update)
         # --- база знаний по U-Boot (файл u_boot_errors_kb.md рядом с программой) ---
         self.kb_text = self._load_kb()
 
@@ -891,6 +1048,12 @@ class MainWindow(QMainWindow):
         self.term.insert_remote(text)
         self._log_io("OUT", text)
         self._maybe_expect_done()
+        self._watchdog_check(self.term.last_output(20))
+        if self._expecting and "**" in text and self.chk_crew.isChecked():
+            self._agent_history.append(
+                {"role": "user", "content":
+                    "КРИТИК: команда выдала ошибку:\n" + text[-400:] +
+                    "\nИсправь подход."})
         if self._output_hook:
             try:
                 msg = self._output_hook(self.term.last_output(60))
@@ -904,6 +1067,22 @@ class MainWindow(QMainWindow):
         if now - self._last_skill_check < 3:
             return
         self._last_skill_check = now
+        if self.chk_semantic.isChecked():
+            hit, _sc = self._find_best_skill(self.term.last_output(60))
+            if hit is not None:
+                key = str(hit.get("trigger", "")).splitlines()[0][:60]
+                if key and key not in self._announced:
+                    self._announced.add(key)
+                    self._matched_skill = hit
+                    hit["hits"] = int(hit.get("hits", 0)) + 1
+                    _save_json(os.path.join(self._base_dir, "skills.json"),
+                               self.skills)
+                    self.ai_output.appendPlainText(
+                        "🎯 Найдено известное решение: %s\n"
+                        "   Нажмите «Применить найденное решение»\n"
+                        % hit.get("note", key))
+                    self._curriculum_update()
+                    return
         out = self.term.last_output(60)
         for s in self.skills:
             trig = str(s.get("trigger", "")).strip()
@@ -992,6 +1171,11 @@ class MainWindow(QMainWindow):
             self.ai_output.appendPlainText(
                 "[обучение: пустой trigger/solution]\n")
             return
+        try:
+            if self.chk_semantic.isChecked():
+                data["vec"] = self._embed(trig)
+        except Exception:
+            pass
         data["hits"] = 0
         data.setdefault("platform", "uboot")
         data.setdefault("note", trig[:120])
@@ -1103,6 +1287,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             score = 0
         reason = " ".join(text.split()[1:])[:120]
+        self._last_verify_score = score
         self.ai_output.appendPlainText("✔ Верификатор: %d/10 — %s\n"
                                        % (score, reason))
         if score >= 7:
@@ -1270,6 +1455,162 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    # ---------- Семантическая память (Voyager skill library) ----------
+    def _embed(self, text):
+        """Вектор текста через OpenAI-совместимый /embeddings (Ollama и др.)."""
+        text = text[:2000]
+        if text in self._vec_cache:
+            return self._vec_cache[text]
+        model = self.settings.get("embed_model", "nomic-embed-text")
+        headers = {"Content-Type": "application/json"}
+        if self.settings.get("api_key"):
+            headers["Authorization"] = "Bearer " + self.settings["api_key"]
+        req = urllib.request.Request(
+            self.settings["base_url"].rstrip("/") + "/embeddings",
+            data=json.dumps({"model": model, "input": text}).encode(),
+            headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            resp = json.loads(r.read().decode("utf-8"))
+        vec = resp["data"][0]["embedding"]
+        if len(self._vec_cache) > 200:
+            self._vec_cache.clear()
+        self._vec_cache[text] = vec
+        return vec
+
+    def _find_best_skill(self, out):
+        """Поиск навыка: сначала по смыслу (эмбеддинги), иначе по ключам."""
+        best, best_s = None, 0.0
+        if self.chk_semantic.isChecked() and \
+                any("vec" in s for s in self.skills):
+            try:
+                now = time.time()
+                if now - self._out_vec[0] > 10:
+                    self._out_vec = (now, self._embed(out))
+                ov = self._out_vec[1]
+                for s in self.skills:
+                    vec = s.get("vec")
+                    if vec:
+                        sc = _cosine(ov, vec)
+                        if sc > best_s:
+                            best, best_s = s, sc
+                if best_s >= 0.72:
+                    return best, best_s
+                best, best_s = None, 0.0
+            except Exception:
+                pass  # эмбеддинги недоступны → ключевой поиск
+        for s in self.skills:
+            sc = self._skill_score(s, out)
+            if sc > best_s:
+                best, best_s = s, sc
+        if best_s >= 0.5:
+            return best, best_s
+        return None, 0.0
+
+    # ---------- Автокуррикулум (Voyager curriculum) ----------
+    def _curriculum_update(self):
+        cats = {
+            "USB/FAT": ["usb", "fatload", "partition not valid"],
+            "AVB/подпись": ["avb", "bad signature", "verity"],
+            "eMMC": ["mmc", "emmc"],
+            "NAND": ["nand"],
+            "SPI": ["spi flash", "sf erase"],
+            "Загрузка ядра": ["bootcmd", "kernel", "panic"],
+        }
+        blob = (self.kb_text.lower()
+                + json.dumps(self.skills, ensure_ascii=False).lower())
+        uncovered = [c for c, kws in cats.items()
+                     if not any(k in blob for k in kws)]
+        extra = "не покрыто: " + ", ".join(uncovered) if uncovered \
+            else "все категории покрыты ✓"
+        self.skill_status.setText("навыков: %d | %s" % (len(self.skills),
+                                                        extra))
+
+    # ---------- Ватчдог автоэскалации ----------
+    def _watchdog_check(self, out):
+        now = time.time()
+        key = None
+        for line in out.splitlines():
+            ls = line.strip()
+            low = ls.lower()
+            if ls.startswith("**") or "error" in low or "fail" in low:
+                key = ls[:60]
+                break
+        if not key:
+            return
+        self._err_history = [(t, k) for t, k in self._err_history
+                             if now - t < 120]
+        self._err_history.append((now, key))
+        same = sum(1 for _, k in self._err_history if k == key)
+        if same >= 3 and key not in self._wd_fired:
+            self._wd_fired.add(key)
+            self.ai_output.appendPlainText(
+                "🚨 ВАТЧДОГ: ошибка повторяется (%d раз за 2 мин): %s\n"
+                "Запускаю автодиагностику…\n" % (same, key))
+            if self.settings.get("base_url"):
+                QTimer.singleShot(1000, self._full_analysis)
+
+    # ---------- Бригада: планировщик (CrewAI-паттерн) ----------
+    def _plan_first(self):
+        sys = ("Ты — планировщик восстановления. Составь краткий план (3-7 "
+               "шагов) по выводу терминала. Каждая строка: «команда — "
+               "критерий успеха». Без пояснений.")
+        out = self.term.last_output(100)
+        self.worker = AiWorker(self.settings,
+                               [{"role": "system", "content": sys},
+                                {"role": "user", "content": out}])
+        self.worker.result.connect(self._plan_got)
+        self.worker.failed.connect(lambda _e: self._agent_request())
+        self.worker.start()
+
+    def _plan_got(self, plan):
+        self.ai_output.appendPlainText("📋 План бригады:\n%s\n" % plan)
+        self._agent_history.append(
+            {"role": "user", "content":
+                "ПЛАН восстановления (следуй ему шаг за шагом; критик "
+                "проверяет каждый шаг):\n" + plan})
+        self._agent_request()
+
+    # ---------- Самонастройка промптов (DSPy-паттерн) ----------
+    def _tune_prompts(self):
+        if not self._ai_available():
+            return
+        try:
+            with open(os.path.join(self._base_dir, "runs.jsonl"),
+                      encoding="utf-8") as f:
+                lines = f.read().splitlines()[-40:]
+        except OSError:
+            lines = []
+        fails = [l for l in lines if "подтверждено верификатором" not in l
+                 and "решена" not in l]
+        if len(fails) < 3:
+            QMessageBox.information(
+                self, "Тюнинг промптов",
+                "Недостаточно неудачных запусков для анализа (нужно ≥3).\n"
+                "Покрутите агента — включая на эмуляторе.")
+            return
+        sys = ("Ты — оптимизатор промптов. Ниже журнал неудачных запусков "
+               "агента восстановления устройств. Предложи 3-5 конкретных "
+               "дополнений к его системному промпту, предотвращающих похожие "
+               "неудачи. Ответь готовым текстом для вставки в файл правок.")
+        user = "\n".join(fails)
+        self.ai_output.appendPlainText("— анализирую журнал запусков…\n")
+        self._ask_ai([{"role": "system", "content": sys},
+                      {"role": "user", "content": user}], self._apply_tuning)
+
+    def _apply_tuning(self, text):
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            with open(os.path.join(self._base_dir, "prompt_tuning.md"),
+                      "a", encoding="utf-8") as f:
+                f.write("\n\n## Тюнинг от %s\n%s\n" % (stamp, text))
+        except OSError:
+            self.ai_output.appendPlainText("[тюнинг: не удалось записать]\n")
+            return
+        self.kb_text = self._load_kb()
+        self.ai_output.appendPlainText(
+            "⚒ Промпты настроены по журналу (prompt_tuning.md), "
+            "вступает в силу сразу\n")
+
     # ---------- Полный анализ ----------
     def _full_analysis(self):
         if not self._ai_available():
@@ -1391,7 +1732,10 @@ class MainWindow(QMainWindow):
                 + out})
         self.ai_output.appendPlainText("— агент запущен, анализирую…\n")
         self.agent_status.setText("агент работает…")
-        self._agent_request()
+        if self.chk_crew.isChecked():
+            self._plan_first()   # бригада: сначала план
+        else:
+            self._agent_request()
 
     def _agent_request(self):
         self.worker = AiWorker(self.settings, self._agent_history[-30:])
@@ -1406,6 +1750,17 @@ class MainWindow(QMainWindow):
     def _agent_finish(self, msg):
         self._agent_active = False
         self._ai_busy = False
+        try:
+            rec = {"ts": datetime.datetime.now().isoformat(),
+                   "result": msg,
+                   "steps": getattr(self, "_agent_steps", 0),
+                   "score": self._last_verify_score,
+                   "profile": self.profile_combo.currentData()}
+            with open(os.path.join(self._base_dir, "runs.jsonl"),
+                      "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
         self.agent_status.setText("готово: " + msg)
         self.ai_output.appendPlainText("— агент завершил работу (%s)\n" % msg)
 
@@ -1682,26 +2037,72 @@ class MainWindow(QMainWindow):
         l6.addWidget(self.skill_status)
         lay.addWidget(g6)
 
+        # -- автономия следующего уровня --
+        g7 = QGroupBox("Автономия следующего уровня")
+        l7 = QVBoxLayout(g7)
+        self.chk_semantic = QCheckBox(
+            "Семантическая память (эмбеддинги Ollama)")
+        self.chk_semantic.setChecked(True)
+        self.chk_crew = QCheckBox("Бригада: план → исполнение → критик")
+        self.chk_crew.setChecked(False)
+        btn_tune = QPushButton("Настроить промпты по журналу запусков")
+        btn_tune.clicked.connect(self._tune_prompts)
+        l7.addWidget(self.chk_semantic)
+        l7.addWidget(self.chk_crew)
+        l7.addWidget(btn_tune)
+        lay.addWidget(g7)
+
         dock = QDockWidget("ИИ-помощник")
         dock.setWidget(panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
     # ---------- SSH ----------
     def connect_ssh(self):
-        if paramiko is None:
-            QMessageBox.critical(self, "Ошибка",
-                                 "Не установлен пакет paramiko:\n"
-                                 "pip install paramiko")
-            return
         if self.ssh and self.ssh.isRunning():
-            QMessageBox.information(self, "SSH", "Уже подключено.")
+            QMessageBox.information(self, "Подключение", "Уже подключено.")
             return
-        dlg = ConnectDialog(self)
+        dlg = ConnectDialog(self._conn, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        self.ssh = SshWorker(dlg.host.text().strip(), dlg.port.value(),
-                             dlg.user.text().strip(),
-                             dlg.password.text(), dlg.keyfile.text().strip())
+        self._conn = {"type": dlg.conn_type.currentData(),
+                      "host": dlg.host.text(),
+                      "port": dlg.port.value(),
+                      "user": dlg.user.text(),
+                      "port_name": dlg.port_name.currentText(),
+                      "baud": dlg.baud.currentText()}
+        self._save_config()
+        kind = dlg.conn_type.currentData()
+        if kind == "mock":
+            self.ssh = MockDevice()
+            self.term.local_echo = False
+            self.term.enter_seq = "\r"
+        elif kind == "serial":
+            if serial is None:
+                QMessageBox.critical(self, "Ошибка",
+                                     "Не установлен пакет pyserial:\n"
+                                     "pip install pyserial")
+                return
+            port = dlg.port_name.currentText().strip()
+            if not port:
+                QMessageBox.warning(self, "Serial", "Укажите COM-порт.")
+                return
+            try:
+                baud = int(dlg.baud.currentText().strip())
+            except ValueError:
+                baud = 115200
+            self.ssh = SerialWorker(port, baud)
+            self.term.local_echo = False
+            self.term.enter_seq = "\r"
+        else:
+            if paramiko is None:
+                QMessageBox.critical(self, "Ошибка",
+                                     "Не установлен пакет paramiko:\n"
+                                     "pip install paramiko")
+                return
+            self.ssh = SshWorker(dlg.host.text().strip(), dlg.port.value(),
+                                 dlg.user.text().strip(),
+                                 dlg.password.text(),
+                                 dlg.keyfile.text().strip())
         self.ssh.dataReceived.connect(self._on_term_output)
         self.ssh.connected.connect(self._on_connected_auto)
         self.ssh.disconnected.connect(self._on_disconnected)
@@ -1755,9 +2156,63 @@ class MainWindow(QMainWindow):
             self.settings["base_url2"] = dlg.base2.text().strip()
             self.settings["api_key2"] = dlg.key2.text().strip()
             self.settings["model2"] = dlg.model2.text().strip()
+            self.settings["llamafile_path"] = dlg.llamafile_path.text().strip()
             self._save_config()
 
+    # ---------- llamafile: локальный движок в одном файле ----------
+    def _llamafile_running(self):
+        try:
+            s = socket.create_connection(("127.0.0.1", 8080), timeout=1)
+            s.close()
+            return True
+        except OSError:
+            return False
+
+    def _ensure_llamafile(self):
+        """Если выбран llamafile и он не работает — запускаем его."""
+        if "8080" not in str(self.settings.get("base_url", "")):
+            return True
+        if self._llamafile_running():
+            return True
+        path = str(self.settings.get("llamafile_path", "")).strip()
+        if not path or not os.path.exists(path):
+            QMessageBox.information(
+                self, "llamafile",
+                "Локальный движок не запущен.\n\nСкачайте llamafile "
+                "(один .exe с моделью внутри):\n"
+                "https://github.com/Mozilla-Ocho/llamafile\n\n"
+                "Затем укажите путь к нему в «Настройки ИИ» — программа "
+                "будет запускать его сама.")
+            return False
+        try:
+            self.ai_output.appendPlainText("🚀 запускаю llamafile…\n")
+            kwargs = {}
+            if sys.platform.startswith("win"):
+                kwargs["creationflags"] = 0x00000008  # DETACHED_PROCESS
+            subprocess.Popen([path, "--server", "--port", "8080"],
+                             **kwargs)
+            for _ in range(60):  # ждём готовности до 60 сек
+                self.msleep_check(1000)
+                if self._llamafile_running():
+                    self.ai_output.appendPlainText("✔ llamafile готов\n")
+                    return True
+        except OSError as ex:
+            QMessageBox.warning(self, "llamafile",
+                                "Не удалось запустить:\n" + str(ex))
+        return self._llamafile_running()
+
+    def msleep_check(self, ms):
+        """Безопасная пауза с обработкой событий Qt."""
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
     def _ai_available(self):
+        if self._ai_busy:
+            self.ai_output.appendPlainText("…ИИ занят, подождите…")
+            return False
+        if not self._ensure_llamafile():
+            return False
         if not self.settings["base_url"]:
             QMessageBox.information(
                 self, "ИИ", "Задайте URL ИИ в «Настройки ИИ».\n"

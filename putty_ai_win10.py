@@ -302,14 +302,31 @@ class ConnectDialog(QDialog):
             self.keyfile.setText(path)
 
 
+PROVIDERS = [
+    ("Ollama (локально, бесплатно)",
+     "http://localhost:11434/v1", "qwen2.5-coder"),
+    ("Groq (очень быстро, есть бесплатный лимит)",
+     "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+    ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+    ("Свой сервер (OpenAI-совместимый)", None, None),
+]
+
+
 class AiSettingsDialog(QDialog):
-    """Настройки ИИ: по умолчанию локальная Ollama."""
+    """Настройки ИИ: пресеты провайдеров + ручной ввод."""
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Настройки ИИ")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(460)
         lay = QFormLayout(self)
+
+        self.provider = QComboBox()
+        self.provider.addItem("— выберите провайдера (подставит URL и модель) —")
+        for name, _, _ in PROVIDERS:
+            self.provider.addItem(name)
+        lay.addRow("Провайдер:", self.provider)
+        self.provider.currentIndexChanged.connect(self._apply_preset)
 
         self.base = QLineEdit(settings["base_url"])
         self.key = QLineEdit(settings.get("api_key", ""))
@@ -320,8 +337,20 @@ class AiSettingsDialog(QDialog):
         lay.addRow("API-ключ:", self.key)
         lay.addRow("Модель:", self.model)
         lay.addRow(QLabel(
-            "Локально (Ollama): http://localhost:11434/v1, ключ пустой.\n"
+            "Ollama (Win10+): http://localhost:11434/v1, ключ пустой.\n"
+            "Groq: ключ с https://console.groq.com/keys (регистрация бесплатно).\n"
+            "  Модели Groq: llama-3.3-70b-versatile (умная),\n"
+            "  llama-3.1-8b-instant (самая быстрая), qwen-qwq-32b (рассуждения).\n"
             "OpenAI: https://api.openai.com/v1 + ваш ключ."))
+
+    def _apply_preset(self, idx):
+        if idx <= 0:
+            return
+        url, model = PROVIDERS[idx - 1][1], PROVIDERS[idx - 1][2]
+        if url:
+            self.base.setText(url)
+        if model:
+            self.model.setText(model)
 
         btns = QHBoxLayout()
         ok = QPushButton("Сохранить")

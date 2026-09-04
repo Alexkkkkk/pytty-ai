@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QGroupBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QAction, QFont, QTextCursor
+from PyQt6.QtGui import QAction, QFont, QTextCursor, QGuiApplication
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +451,69 @@ class MainWindow(QMainWindow):
         return ("Дополни начало команды bash. Ответь ТОЛЬКО продолжением "
                 "текста (без повтора введённого), либо пустой строкой, "
                 "если не уверен. Без пояснений и markdown.")
+
+    # ---------- Сценарий восстановления ----------
+    def _make_script(self):
+        if not self._ai_available():
+            return
+        kb = ("\n\nБаза знаний:\n" + self.kb_text) if self.kb_text else ""
+        if self.profile_combo.currentData() == "uboot":
+            sys = ("Ты — эксперт по восстановлению устройств через консоль "
+                   "U-Boot (прошивка embedded/TV). Составь ПОЛНЫЙ сценарий "
+                   "восстановления по текущему выводу терминала — от диагностики "
+                   "до завершающей команды. Формат ответа строго: каждый шаг с "
+                   "новой строки в виде `команда  # короткий комментарий` "
+                   "(комментарий через # обязателен). Без нумерации, без "
+                   "markdown, без пояснений между шагами, без пустых строк." + kb)
+        else:
+            sys = ("Ты — эксперт по восстановлению Linux-систем. Составь ПОЛНЫЙ "
+                   "сценарий исправления по выводу терминала — от диагностики до "
+                   "проверки результата. Формат: каждый шаг новой строкой в виде "
+                   "`команда  # комментарий`. Без нумерации и markdown." + kb)
+        out = self.term.last_output(120)
+        messages = [{"role": "system", "content": sys},
+                    {"role": "user", "content": "Вывод терминала:\n" + out}]
+        self.ai_output.appendPlainText("— составляю сценарий восстановления…\n")
+        self._ask_ai(messages, self._show_script)
+
+    def _show_script(self, text):
+        self._script_cmds = []
+        lines = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("```"):
+                continue
+            if line.startswith("#"):
+                lines.append(line)
+                continue
+            cmd = line.split("#", 1)[0].strip()
+            if cmd:
+                self._script_cmds.append(cmd)
+            lines.append(line)
+        self.script_view.setPlainText("\n".join(lines))
+        self._script_idx = 0
+        self.ai_output.appendPlainText(
+            "— сценарий готов: %d команд(ы), используйте «Скопировать "
+            "следующий шаг»\n" % len(self._script_cmds))
+
+    def _copy_script(self):
+        text = self.script_view.toPlainText()
+        if text:
+            QGuiApplication.clipboard().setText(text)
+
+    def _copy_next_step(self):
+        cmds = getattr(self, "_script_cmds", [])
+        if not cmds:
+            self.ai_output.appendPlainText("— сначала создайте сценарий\n")
+            return
+        i = getattr(self, "_script_idx", 0)
+        if i >= len(cmds):
+            self.ai_output.appendPlainText("— все шаги уже скопированы\n")
+            return
+        QGuiApplication.clipboard().setText(cmds[i])
+        self._script_idx = i + 1
+        self.ai_output.appendPlainText("шаг %d/%d скопирован: %s\n"
+                                       % (i + 1, len(cmds), cmds[i]))
 
     # ---------- Авто-исправление (агент) ----------
     def _agent_prompt(self):

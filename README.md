@@ -72,3 +72,20 @@ pyinstaller --onefile --noconsole --name "PuTTY-AI" --add-data "u_boot_errors_kb
 соберёт exe и положит его в `dist\PuTTY-AI.exe`.
 
 Ручная сборка (Win10): `python -m PyInstaller --clean --noconfirm PuTTY-AI.spec`
+
+## 🧬 Собственная модель ИИ (дообучение на ваших данных)
+
+Программа копит ваш опыт (skills.json, learned_cases.md). Превратите его
+в свою нейросеть:
+
+```cmd
+python export_dataset.py        :: данные -> dataset.jsonl (ShareGPT)
+```
+
+Далее откройте **colab_train_unsloth.ipynb** (Google Colab, бесплатный T4):
+загрузите dataset.jsonl → Run all → через 30-60 минут скачайте GGUF.
+
+Подключение: **Modelfile** (в архиве) → `ollama create putty-ai -f Modelfile`
+→ в программе выберите модель putty-ai. Или через llamafile (Win7).
+
+Чем больше работаете → больше навыков → умнее ваша модель. Цикл бесконечный.

@@ -490,11 +490,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PuTTY-AI — SSH-клиент с ИИ-помощником")
         self.resize(1000, 640)
 
-        self.settings = {
+        # --- настройки: из config.json (если есть) или по умолчанию ---
+        self.config = self._load_config()
+        self.settings = self.config.get("settings", {
             "base_url": "https://api.groq.com/openai/v1",
             "api_key": "",
             "model": "llama-3.3-70b-versatile",
-        }
+        })
+        self._conn = self.config.get("conn", {})
         # --- база знаний по U-Boot (файл u_boot_errors_kb.md рядом с программой) ---
         self.kb_text = self._load_kb()
 

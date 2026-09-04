@@ -490,11 +490,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PuTTY-AI — SSH-клиент с ИИ-помощником")
         self.resize(1000, 640)
 
-        self.settings = {
+        # --- настройки: из config.json (если есть) или по умолчанию ---
+        self.config = self._load_config()
+        self.settings = self.config.get("settings", {
             "base_url": "http://localhost:11434/v1",   # Ollama по умолчанию
             "api_key": "",
             "model": "qwen2.5-coder",
-        }
+        })
+        self._conn = self.config.get("conn", {})
         # --- база знаний по U-Boot (файл u_boot_errors_kb.md рядом с программой) ---
         self.kb_text = self._load_kb()
 

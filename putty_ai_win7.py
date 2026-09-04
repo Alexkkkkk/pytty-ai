@@ -503,6 +503,7 @@ class MainWindow(QMainWindow):
         self._ac_cache = {}
         self._agent_active = False
         self._agent_last_cmd = ""
+        self._session_cmds = []   # команды, выполненные в этой сессии
 
         # --- терминал ---
         self.term = Terminal()
@@ -810,6 +811,8 @@ class MainWindow(QMainWindow):
         self.term.insert_remote("\n")
         self._send_to_server("\n")
         self.term.buffer = ""
+        self._session_cmds.extend(
+            [l.strip() for l in cmd.splitlines() if l.strip()])
 
     # ---------- UI ----------
     def _build_toolbar(self):
@@ -934,6 +937,13 @@ class MainWindow(QMainWindow):
         row4.addWidget(btn_save_script)
         l4.addLayout(row4)
         l4.addWidget(self.script_view)
+
+        # -- обучение: сохранение удачных решений --
+        g5 = QGroupBox("Обучение (запоминает удачные решения)")
+        l5 = QVBoxLayout(g5)
+        btn_learn = QPushButton("Сохранить успешное решение в базу знаний")
+        btn_learn.clicked.connect(self._learn_success)
+        l5.addWidget(btn_learn)
 
         lay.addWidget(g1)
         lay.addWidget(g2)
@@ -1080,6 +1090,8 @@ class MainWindow(QMainWindow):
         self.term.insert_remote("\n")
         self._send_to_server("\n")
         self.term.buffer = ""
+        self._session_cmds.extend(
+            [l.strip() for l in cmd.splitlines() if l.strip()])
 
     # -- автодополнение по Tab --
     def _autocomplete(self, buf):

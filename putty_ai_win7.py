@@ -1052,6 +1052,13 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         tb.addAction(act_ai)
         tb.addSeparator()
+        for label, seq in (("Пробел", " "), ("Tab", "\t"), ("Enter", "\r"),
+                           ("Esc", "\x1b"), ("Ctrl+C", "\x03")):
+            act_key = QAction(label, self)
+            act_key.triggered.connect(lambda _=False, s=seq:
+                                      self._send_key(s))
+            tb.addAction(act_key)
+        tb.addSeparator()
         tb.addAction(act_exit)
 
     def _build_ai_panel(self):
@@ -1241,6 +1248,15 @@ class MainWindow(QMainWindow):
     def _send_to_server(self, text):
         if self.ssh and self.ssh.isRunning():
             self.ssh.send(text)
+
+    def _send_key(self, seq):
+        """Быстрая отправка служебной клавиши (Пробел/Tab/Enter/Esc/Ctrl+C)."""
+        if self.ssh and self.ssh.isRunning():
+            self.ssh.send(seq)
+            names = {" ": "Пробел", "\t": "Tab", "\r": "Enter",
+                     "\x1b": "Esc", "\x03": "Ctrl+C"}
+            self.ai_output.appendPlainText(
+                "⌨ отправлено: %s\n" % names.get(seq, repr(seq)))
 
     # ---------- ИИ ----------
     def edit_ai_settings(self):

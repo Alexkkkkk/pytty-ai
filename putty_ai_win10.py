@@ -340,7 +340,7 @@ class AiWorker(QThread):
 # Диалоги
 # ---------------------------------------------------------------------------
 class ConnectDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, conn=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Подключение")
         self.setMinimumWidth(380)
@@ -518,6 +518,31 @@ class MainWindow(QMainWindow):
         # --- панель ИИ ---
         self._build_ai_panel()
         self._build_toolbar()
+
+    def _load_config(self):
+        """Читает config.json (настройки ИИ + последнее подключение)."""
+        dirs = [os.path.dirname(os.path.abspath(sys.argv[0]))]
+        if hasattr(sys, "_MEIPASS"):
+            dirs.append(sys._MEIPASS)
+        for d in dirs:
+            try:
+                with open(os.path.join(d, "config.json"),
+                          encoding="utf-8") as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                continue
+        return {}
+
+    def _save_config(self):
+        """Сохраняет настройки ИИ и параметры подключения в config.json."""
+        try:
+            path = os.path.join(
+                os.path.dirname(os.path.abspath(sys.argv[0])), "config.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"settings": self.settings, "conn": self._conn},
+                          f, ensure_ascii=False, indent=1)
+        except OSError:
+            pass
 
     def _load_kb(self):
         """Загружает базу знаний по ошибкам U-Boot (рядом с exe/скриптом)."""
@@ -1121,6 +1146,7 @@ class MainWindow(QMainWindow):
 
     # ---------- закрытие ----------
     def closeEvent(self, e):
+        self._save_config()
         if self.ssh:
             self.ssh.stop()
             self.ssh.wait(2000)

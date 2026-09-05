@@ -31,6 +31,11 @@ try:
 except ImportError:
     paramiko = None
 
+try:
+    import serial
+except ImportError:
+    serial = None
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
@@ -584,6 +589,7 @@ class AiSettingsDialog(QDialog):
             "  Модели Groq: llama-3.3-70b-versatile (умная),\n"
             "  llama-3.1-8b-instant (самая быстрая), qwen-qwq-32b (рассуждения).\n"
             "OpenAI: https://api.openai.com/v1 + ваш ключ."))
+
 
     def _browse_llamafile(self):
         path, _ = QFileDialog.getOpenFileName(

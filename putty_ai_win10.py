@@ -652,6 +652,7 @@ class MockDevice(QThread):
         super().__init__(parent)
         self._stop = False
         self.usb_ready = False
+        self._buf = ""   # буфер ввода до Enter (как настоящий UART)
 
     def run(self):
         self.connected.emit()
@@ -662,7 +663,22 @@ class MockDevice(QThread):
         self.disconnected.emit("")
 
     def send(self, text):
-        t = text.strip()
+        """Накапливаем символы до перевода строки — как настоящий UART."""
+        self._buf += text
+        while True:
+            pos = -1
+            sep = None
+            for i, ch in enumerate(self._buf):
+                if ch in ("\r", "\n"):
+                    pos, sep = i, ch
+                    break
+            if pos < 0:
+                return
+            line = self._buf[:pos]
+            self._buf = self._buf[pos + 1:]
+            self._handle_line(line.strip())
+
+    def _handle_line(self, t):
         if not t:
             return
         low = t.lower()
@@ -1070,7 +1086,7 @@ class MainWindow(QMainWindow):
 
     def _safety(self, cmd):
         """Базовые правила + правила, выученные программой самостоятельно."""
-        level, pat = self._safety(cmd)
+        level, pat = _cmd_safety(cmd)
         if level == "ok":
             low = cmd.lower()
             for p in self.extra_rules.get("dangerous", []):

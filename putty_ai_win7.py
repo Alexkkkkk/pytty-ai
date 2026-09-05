@@ -514,7 +514,7 @@ PROVIDERS = [
     ("Ollama (локально, бесплатно)",
      "http://localhost:11434/v1", "qwen2.5-coder"),
     ("Groq (очень быстро, есть бесплатный лимит)",
-     "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+     "https://api.groq.com/openai/v1", "openai/gpt-oss-120b"),
     ("llamafile (1 файл, офлайн, работает без установки)",
      "http://localhost:8080/v1", "llamafile"),
     ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
@@ -589,7 +589,7 @@ class AiSettingsDialog(QDialog):
         lay.addRow(QLabel(
             "Ollama (Win10+): http://localhost:11434/v1, ключ пустой.\n"
             "Groq: ключ с https://console.groq.com/keys (регистрация бесплатно).\n"
-            "  Модели Groq: llama-3.3-70b-versatile (умная),\n"
+            "  Модели Groq: openai/gpt-oss-120b (умная),\n"
             "  llama-3.1-8b-instant (самая быстрая), qwen-qwq-32b (рассуждения).\n"
             "OpenAI: https://api.openai.com/v1 + ваш ключ."))
 
@@ -741,7 +741,7 @@ class MainWindow(QMainWindow):
         self.settings = self.config.get("settings", {
             "base_url": "https://api.groq.com/openai/v1",
             "api_key": "",
-            "model": "llama-3.3-70b-versatile",
+            "model": "qwen2.5-coder",
         })
         self._conn = self.config.get("conn", {})
 

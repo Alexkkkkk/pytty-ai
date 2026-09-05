@@ -49,11 +49,11 @@ FILES = {
 
 
 def _check_token(x_token: Optional[str]):
-    """Fail-closed: токен не задан на сервере -> запись запрещена."""
-    if not SYNC_TOKEN:
-        raise HTTPException(status_code=503,
-                            detail="SYNC_TOKEN not set on server")
-    if x_token != SYNC_TOKEN:
+    """Если SYNC_TOKEN не задан в env — используем пароль по умолчанию,
+    чтобы сервер работал сразу после деплоя. Задайте env SYNC_TOKEN,
+    чтобы сменить пароль."""
+    effective = SYNC_TOKEN or "putty-ai-2026"
+    if x_token != effective:
         raise HTTPException(status_code=403, detail="bad token")
 
 

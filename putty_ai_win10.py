@@ -1576,6 +1576,20 @@ class MainWindow(QMainWindow):
             return best, best_s
         return None, 0.0
 
+    # ---------- Уровень обучения мастерской ----------
+    LEVELS = [(0, "Новичок"), (50, "Опытный"), (150, "Эксперт"),
+              (400, "Мастер"), (1000, "Легенда мастерской")]
+
+    def _learning_level(self):
+        cases = self.kb_text.count("## Удачный случай")
+        xp = sum(int(s.get("hits", 0)) for s in self.skills) * 5 \
+            + len(self.skills) * 20 + cases * 15
+        name, floor = self.LEVELS[0]
+        for need, lvl in self.LEVELS:
+            if xp >= need:
+                name, floor = lvl, need
+        return name, xp
+
     # ---------- Автокуррикулум (Voyager curriculum) ----------
     def _curriculum_update(self):
         cats = {
@@ -1592,8 +1606,10 @@ class MainWindow(QMainWindow):
                      if not any(k in blob for k in kws)]
         extra = "не покрыто: " + ", ".join(uncovered) if uncovered \
             else "все категории покрыты ✓"
-        self.skill_status.setText("навыков: %d | %s" % (len(self.skills),
-                                                        extra))
+        lvl, xp = self._learning_level()
+        self.skill_status.setText(
+            "навыков: %d | %s | уровень: %s (%d XP)" % (len(self.skills),
+                                                        extra, lvl, xp))
 
     # ---------- Ватчдог автоэскалации ----------
     def _watchdog_check(self, out):

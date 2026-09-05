@@ -50,6 +50,21 @@ FILES = {
 import time as _time
 STATS = {"puts": 0, "gets": 0, "start": _time.time()}
 
+HIST_PATH = os.path.join(DATA, "stats_history.json")
+HIST = _read_json(HIST_PATH, {}) if False else None  # заглушка до определения
+
+
+def _bump_daily(key):
+    """+1 к сегодняшнему счётчику и сохранение истории."""
+    day = _time.strftime("%Y-%m-%d")
+    HIST.setdefault(day, {"puts": 0, "gets": 0})
+    HIST[day][key] = HIST[day].get(key, 0) + 1
+    try:
+        with open(HIST_PATH, "w", encoding="utf-8") as f:
+            json.dump(HIST, f)
+    except OSError:
+        pass
+
 
 def _read_json(fname, default):
     try:
@@ -57,6 +72,9 @@ def _read_json(fname, default):
             return json.load(f)
     except Exception:
         return default
+
+
+HIST = _read_json(HIST_PATH, {})
 
 
 def _read_text(fname):
@@ -96,6 +114,7 @@ def get_sync(name: str):
             return PlainTextResponse("")
         return JSONResponse([])
     STATS["gets"] += 1
+    _bump_daily("gets")
     with open(p, encoding="utf-8") as f:
         content = f.read()
     if name == "cases":
@@ -120,6 +139,7 @@ async def put_sync(name: str, request: Request,
         except ValueError:
             raise HTTPException(status_code=400, detail="bad json")
     STATS["puts"] += 1
+    _bump_daily("puts")
     with open(_path(name), "wb") as f:
         f.write(body)
     return {"ok": True, "bytes": len(body)}
@@ -211,6 +231,14 @@ tr:hover td{background:#1c2128}
 .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px}
 .b-red{background:#3d1d1d;color:#ff7b72}.b-gray{background:#21262d;color:#8b949e}
 .small{color:#8b949e;font-size:12px}
+.lvlbar{background:#21262d;border-radius:6px;height:10px;margin:8px 0 4px;overflow:hidden}
+#lvl-fill{height:100%;width:0;background:linear-gradient(90deg,#238636,#7ee787);transition:width .6s}
+.bars{display:flex;gap:6px;align-items:flex-end;height:120px;padding:14px;background:#161b22;border:1px solid #30363d;border-radius:10px;margin-bottom:22px}
+.bar{flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:3px}
+.bar .put,.bar .get{width:100%;border-radius:3px 3px 0 0;min-height:2px}
+.bar .put{background:#7ee787}.bar .get{background:#1f6feb}
+.bar .d{font-size:10px;color:#8b949e;text-align:center}
+.bar .n{font-size:10px;color:#c9d1d9;text-align:center}
 a{color:#58a6ff}
 #refresh{float:right}
 </style></head><body>
@@ -223,10 +251,17 @@ a{color:#58a6ff}
 <div class="card"><div class="v" id="c-danger">—</div><div class="l">правил блокировки</div></div>
 <div class="card"><div class="v" id="c-puts">—</div><div class="l">загрузок базы (PUT)</div></div>
 <div class="card"><div class="v" id="c-gets">—</div><div class="l">скачиваний (GET)</div></div>
+<div class="card" style="grid-column:1/-1">
+<div class="v" id="lvl-name" style="font-size:20px">—</div>
+<div class="lvlbar"><div id="lvl-fill"></div></div>
+<div class="l">уровень обучения мастерской · <span id="lvl-xp">0</span> XP</div>
+</div>
 </div>
 <h3 style="color:#9fd0ff">Навыки мастерской</h3>
 <table><thead><tr><th>Ошибка (триггер)</th><th>Решение</th><th>Использований</th><th></th></tr></thead>
 <tbody id="skills"></tbody></table>
+<h3 style="color:#9fd0ff">Активность мастерской (14 дней)</h3>
+<div class="bars" id="chart"></div>
 <h3 style="color:#9fd0ff">Правила безопасности</h3>
 <table><thead><tr><th style="width:110px">Уровень</th><th>Паттерн</th></tr></thead>
 <tbody id="rules"></tbody></table>
@@ -249,6 +284,23 @@ async function load(){
       const sol = (s.solution||[]).join('; ');
       tb.innerHTML += '<tr><td>'+escapeHtml(trg)+'</td><td class="small">'+escapeHtml(sol)+'</td><td>'+(s.hits||0)+'</td><td>'+(s.dangerous?'<span class="badge b-red">опасно</span>':'')+'</td></tr>';
     });
+    if(d.level){
+      document.getElementById('lvl-name').textContent = d.level.name;
+      document.getElementById('lvl-xp').textContent = d.level.xp;
+      document.getElementById('lvl-fill').style.width = d.level.pct + '%';
+    }
+    const ch = document.getElementById('chart'); ch.innerHTML = '';
+    const days = Object.keys(d.daily||{});
+    const max = Math.max(1, ...days.map(k => (d.daily[k].puts||0)+(d.daily[k].gets||0)));
+    days.forEach(k => {
+      const v = d.daily[k];
+      ch.innerHTML += '<div class="bar"><div class="n">'+(v.puts||0)+'</div>'
+        + '<div class="put" style="height:'+Math.round(100*(v.puts||0)/max)+'%"></div>'
+        + '<div class="get" style="height:'+Math.round(100*(v.gets||0)/max)+'%"></div>'
+        + '<div class="n">'+(v.gets||0)+'</div>'
+        + '<div class="d">'+k.slice(5)+'</div></div>';
+    });
+    if(!ch.innerHTML) ch.innerHTML = '<div class="small" style="padding:20px">пока нет активности</div>';
     if(!tb.innerHTML) tb.innerHTML = '<tr><td colspan="4" class="small">база пуста — отправьте навыки из программы кнопкой «На сервер»</td></tr>';
     const rb = document.getElementById('rules'); rb.innerHTML = '';
     (d.rules.dangerous||[]).forEach(p=>{ rb.innerHTML += '<tr><td><span class="badge b-red">блок</span></td><td class="small">'+escapeHtml(p)+'</td></tr>'; });
@@ -275,7 +327,29 @@ def api_stats():
         "gets": STATS["gets"],
         "skills_data": skills[-100:],
         "rules": rules,
+        "level": _learning_level(skills, cases.count("## Удачный случай")),
+        "daily": {d: HIST[d] for d in sorted(HIST)[-14:]},
     }
+
+
+LEVELS = [(0, "Новичок"), (50, "Опытный"), (150, "Эксперт"),
+          (400, "Мастер"), (1000, "Легенда мастерской")]
+
+
+def _learning_level(skills, cases):
+    xp = sum(int(s.get("hits", 0)) for s in skills) * 5 \
+        + len(skills) * 20 + cases * 15
+    name = LEVELS[0][1]
+    floor = 0
+    for need, lvl in LEVELS:
+        if xp >= need:
+            name, floor = lvl, need
+    nxt = next((n for n, _ in LEVELS if n > xp), None)
+    if nxt:
+        pct = int(100 * (xp - floor) / (nxt - floor))
+    else:
+        pct = 100
+    return {"xp": xp, "name": name, "pct": pct, "next": nxt}
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -49,7 +49,11 @@ FILES = {
 
 
 def _check_token(x_token: Optional[str]):
-    if SYNC_TOKEN and x_token != SYNC_TOKEN:
+    """Fail-closed: токен не задан на сервере -> запись запрещена."""
+    if not SYNC_TOKEN:
+        raise HTTPException(status_code=503,
+                            detail="SYNC_TOKEN not set on server")
+    if x_token != SYNC_TOKEN:
         raise HTTPException(status_code=403, detail="bad token")
 
 

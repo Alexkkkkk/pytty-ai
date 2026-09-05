@@ -66,6 +66,9 @@ def _save_json(path, data):
         return False
 
 
+APP_VERSION = "1.0.0"
+
+
 # ---------------------------------------------------------------------------
 # Безопасность: команды, запрещённые для автоматического выполнения
 # ---------------------------------------------------------------------------
@@ -710,7 +713,8 @@ class MockDevice(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PuTTY-AI — SSH-клиент с ИИ-помощником")
+        self.setWindowTitle("PuTTY-AI v%s — SSH-клиент с ИИ-помощником"
+                            % APP_VERSION)
         self.resize(1000, 640)
 
         # --- папка данных пользователя нужна всем остальным —
@@ -1488,7 +1492,7 @@ class MainWindow(QMainWindow):
             assets = data.get("assets") or []
             url = assets[0].get("browser_download_url", "") if assets \
                 else data.get("html_url", "")
-            if tag and url:
+            if tag and url and tag != APP_VERSION:
                 ret = QMessageBox.question(
                     self, "Обновление PuTTY-AI",
                     "Доступна версия %s.\nОткрыть страницу загрузки?" % tag,

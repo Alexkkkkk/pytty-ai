@@ -1788,6 +1788,68 @@ class MainWindow(QMainWindow):
             self.sync_status.setText("ошибка скачивания: %s" % ex)
             self.ai_output.appendPlainText("[sync: %s]\n" % ex)
 
+    def _srv_download(self):
+        """Скачать общую базу с сервера мастерской (bothost)."""
+        base = self.srv_url.text().strip().rstrip("/")
+        self.settings["srv_url"] = base
+        self.sync_status.setText("скачивание с сервера…")
+        try:
+            rs = json.loads(self._http_get(base + "/api/sync/skills")
+                            .decode("utf-8"))
+            rr = json.loads(self._http_get(base + "/api/sync/rules")
+                            .decode("utf-8"))
+            rc = self._http_get(base + "/api/sync/cases").decode("utf-8")
+            a, u = self._merge_skills(rs)
+            nr = self._merge_rules(rr)
+            nc = self._merge_cases(rc)
+            _save_json(os.path.join(self._base_dir, "skills.json"),
+                       self.skills)
+            _save_json(os.path.join(self._base_dir, "learned_rules.json"),
+                       self.extra_rules)
+            self.kb_text = self._load_kb()
+            self._curriculum_update()
+            msg = ("✔ с сервера: +%d навыков (обн. %d), +%d правил, "
+                   "+%d случаев" % (a, u, nr, nc))
+            self.sync_status.setText(msg)
+            self.ai_output.appendPlainText("— " + msg + "\n")
+            self._save_config()
+        except Exception as ex:
+            self.sync_status.setText("ошибка скачивания: %s" % ex)
+            self.ai_output.appendPlainText("[sync srv: %s]\n" % ex)
+
+    def _srv_upload(self):
+        """Отправить локальную базу на сервер мастерской."""
+        base = self.srv_url.text().strip().rstrip("/")
+        token = self.srv_token.text().strip()
+        self.settings["srv_url"] = base
+        self.settings["srv_token"] = token
+        self.sync_status.setText("отправка на сервер…")
+        mapping = (("skills.json", "skills"),
+                   ("learned_rules.json", "rules"),
+                   ("learned_cases.md", "cases"))
+        try:
+            for fname, api_name in mapping:
+                with open(os.path.join(self._base_dir, fname),
+                          encoding="utf-8") as f:
+                    content = f.read()
+                headers = {"X-Token": token}
+                if fname.endswith(".json"):
+                    headers["Content-Type"] = "application/json"
+                else:
+                    headers["Content-Type"] = "text/plain; charset=utf-8"
+                req = urllib.request.Request(
+                    base + "/api/sync/" + api_name,
+                    data=content.encode("utf-8"),
+                    headers=headers, method="PUT")
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    r.read()
+            self.sync_status.setText("✔ база отправлена на сервер")
+            self.ai_output.appendPlainText("— база отправлена на сервер\n")
+            self._save_config()
+        except Exception as ex:
+            self.sync_status.setText("ошибка отправки: %s" % ex)
+            self.ai_output.appendPlainText("[sync srv upload: %s]\n" % ex)
+
     def _sync_upload(self):
         """Отправить локальную базу в репозиторий (нужен токен write)."""
         repo = self.sync_repo.text().strip() or "Alexkkkkk/pytty-ai"
@@ -2313,6 +2375,19 @@ class MainWindow(QMainWindow):
         l8.addRow("Токен:", self.sync_token)
         l8.addRow(self.chk_sync_auto)
         l8.addRow(btn_dl, btn_ul)
+        l8.addRow(QLabel("— сервер мастерской (bothost) —"))
+        self.srv_url = QLineEdit(self.settings.get(
+            "srv_url", "https://terminalai.bothost.tech"))
+        self.srv_token = QLineEdit(self.settings.get(
+            "srv_token", "putty-ai-2026"))
+        self.srv_token.setEchoMode(QLineEdit.EchoMode.Password)
+        btn_srv_dl = QPushButton("С сервера")
+        btn_srv_dl.clicked.connect(self._srv_download)
+        btn_srv_ul = QPushButton("На сервер")
+        btn_srv_ul.clicked.connect(self._srv_upload)
+        l8.addRow("URL:", self.srv_url)
+        l8.addRow("Пароль:", self.srv_token)
+        l8.addRow(btn_srv_dl, btn_srv_ul)
         l8.addRow(self.sync_status)
         lay.addWidget(g8)
 

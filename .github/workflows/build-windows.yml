@@ -1,25 +1,41 @@
+name: Build PuTTY-AI for Windows 7
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
   build-win7:
-    runs-on: windows-2019
+    runs-on: windows-2022
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.8
+      - name: Set up Python 3.8.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.8.10"
           cache: pip
           cache-dependency-path: requirements-build-win7.txt
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           python -m pip install --upgrade "pip<25"
           python -m pip install -r requirements-build-win7.txt
 
       - name: Build PuTTY-AI for Windows 7
         run: >-
-          python -m PyInstaller --clean --noconfirm --onefile --noconsole
+          python -m PyInstaller
+          --clean
+          --noconfirm
+          --onefile
+          --noconsole
           --name "PuTTY-AI"
           --add-data "u_boot_errors_kb.md;."
           --add-data "learned_cases.md;."

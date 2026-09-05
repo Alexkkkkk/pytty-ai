@@ -31,20 +31,15 @@ try:
 except ImportError:
     paramiko = None
 
-try:
-    import serial
-except ImportError:
-    serial = None
-
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
     QLabel, QPlainTextEdit, QTextEdit, QToolBar, QDockWidget, QMessageBox,
-    QFileDialog, QGroupBox, QAction, QShortcut, QListWidget, QListWidgetItem
+    QFileDialog, QGroupBox, QShortcut, QListWidget, QListWidgetItem
 )
 from PyQt5.QtCore import Qt, QThread, QTimer, QUrl, QEventLoop, pyqtSignal
 from PyQt5.QtGui import (
-    QFont, QIcon, QKeySequence, QDesktopServices,
+    QAction, QFont, QIcon, QKeySequence, QShortcut, QDesktopServices,
     QTextCursor, QGuiApplication, QColor
 )
 
@@ -590,7 +585,6 @@ class AiSettingsDialog(QDialog):
             "  llama-3.1-8b-instant (самая быстрая), qwen-qwq-32b (рассуждения).\n"
             "OpenAI: https://api.openai.com/v1 + ваш ключ."))
 
-
     def _browse_llamafile(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "llamafile.exe", "", "Исполняемые файлы (*.exe)")
@@ -716,23 +710,16 @@ class MainWindow(QMainWindow):
 
         # --- настройки: из config.json (если есть) или по умолчанию ---
         self.config = self._load_config()
-        defaults = {
+        self.settings = self.config.get("settings", {
             "base_url": "https://api.groq.com/openai/v1",
             "api_key": "",
             "model": "llama-3.3-70b-versatile",
-            "base_url2": "",
-            "api_key2": "",
-            "model2": "",
-            "llamafile_path": "",
-        }
-        loaded_settings = self.config.get("settings", {})
-        self.settings = dict(defaults)
-        if isinstance(loaded_settings, dict):
-            self.settings.update(loaded_settings)
+        })
         self._conn = self.config.get("conn", {})
 
         # --- самообучение: навыки, правила, самопереписываемый код ---
-        self._base_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        self._base_dir = self._data_dir()
+        self._seed_data_files()
         self.skills = _load_json(os.path.join(self._base_dir, "skills.json"), [])
         self.extra_rules = _load_json(
             os.path.join(self._base_dir, "learned_rules.json"),
@@ -786,62 +773,70 @@ class MainWindow(QMainWindow):
         self._build_ai_panel()
         self._build_toolbar()
 
-    def _config_paths(self):
-        """Возвращает доступные места для config.json."""
-        paths = []
-        appdata = os.environ.get("APPDATA", "").strip()
-        if appdata:
-            paths.append(os.path.join(appdata, "PuTTY-AI", "config.json"))
-        exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-        paths.append(os.path.join(exe_dir, "config.json"))
+    def _data_dir(self):
+        """Папка данных пользователя: %APPDATA%\\PuTTY-AI на Windows
+        (рядом с exe писать запрещено в защищённых папках)."""
+        if os.name == "nt":
+            root = os.environ.get("APPDATA") or os.path.expanduser("~")
+            d = os.path.join(root, "PuTTY-AI")
+        else:
+            d = os.path.dirname(os.path.abspath(sys.argv[0]))
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            d = os.path.dirname(os.path.abspath(sys.argv[0]))
+        return d
+
+    def _seed_data_files(self):
+        """Первый запуск exe: копируем встроенные данные в папку
+        пользователя, чтобы программа могла их дополнять."""
+        sources = []
         if hasattr(sys, "_MEIPASS"):
-            paths.append(os.path.join(sys._MEIPASS, "config.json"))
-        home = os.path.expanduser("~")
-        if home:
-            paths.append(os.path.join(home, ".putty-ai", "config.json"))
-        result = []
-        seen = set()
-        for path in paths:
-            key = os.path.normcase(os.path.abspath(path))
-            if key not in seen:
-                seen.add(key)
-                result.append(path)
-        return result
+            sources.append(sys._MEIPASS)
+        sources.append(os.path.dirname(os.path.abspath(sys.argv[0])))
+        for name in ("skills.json", "learned_rules.json", "user_patches.py",
+                     "learned_cases.md", "prompt_tuning.md"):
+            dst = os.path.join(self._base_dir, name)
+            if os.path.exists(dst):
+                continue
+            for src_dir in sources:
+                src = os.path.join(src_dir, name)
+                if os.path.exists(src):
+                    try:
+                        shutil.copyfile(src, dst)
+                    except OSError:
+                        pass
+                    break
 
     def _load_config(self):
-        """Читает config.json из AppData или рядом с программой."""
-        for path in self._config_paths():
+        """Читает config.json (настройки ИИ + последнее подключение)."""
+        dirs = [self._base_dir,
+                os.path.dirname(os.path.abspath(sys.argv[0]))]
+        if hasattr(sys, "_MEIPASS"):
+            dirs.append(sys._MEIPASS)
+        for d in dirs:
             try:
-                with open(path, encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-            except (OSError, ValueError, TypeError):
+                with open(os.path.join(d, "config.json"),
+                          encoding="utf-8") as f:
+                    return json.load(f)
+            except (OSError, ValueError):
                 continue
         return {}
 
     def _save_config(self):
-        """Безопасно сохраняет настройки в доступное место."""
-        data = {"settings": self.settings, "conn": self._conn}
-        for path in self._config_paths():
-            tmp_path = path + ".tmp"
-            try:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=1)
-                os.replace(tmp_path, path)
-                return True
-            except (OSError, TypeError, ValueError):
-                try:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
-                except OSError:
-                    pass
-        return False
+        """Сохраняет настройки ИИ и параметры подключения в config.json."""
+        try:
+            path = os.path.join(self._base_dir, "config.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"settings": self.settings, "conn": self._conn},
+                          f, ensure_ascii=False, indent=1)
+        except OSError:
+            pass
 
     def _load_kb(self):
-        """Загружает базу знаний по ошибкам U-Boot (рядом с exe/скриптом)."""
-        dirs = [os.path.dirname(os.path.abspath(sys.argv[0]))]
+        """Загружает базу знаний (папка пользователя, рядом с exe, в exe)."""
+        dirs = [self._base_dir,
+                os.path.dirname(os.path.abspath(sys.argv[0]))]
         if hasattr(sys, "_MEIPASS"):  # PyInstaller --onefile
             dirs.append(sys._MEIPASS)
         for d in dirs:
@@ -2199,11 +2194,7 @@ class MainWindow(QMainWindow):
             self.settings["api_key2"] = dlg.key2.text().strip()
             self.settings["model2"] = dlg.model2.text().strip()
             self.settings["llamafile_path"] = dlg.llamafile_path.text().strip()
-            if not self._save_config():
-                QMessageBox.warning(
-                    self, "Настройки",
-                    "Не удалось сохранить config.json.\n"
-                    "Проверьте права доступа к папке программы.")
+            self._save_config()
 
     # ---------- llamafile: локальный движок в одном файле ----------
     def _llamafile_running(self):

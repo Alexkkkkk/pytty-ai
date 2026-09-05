@@ -718,7 +718,8 @@ class MainWindow(QMainWindow):
         self._conn = self.config.get("conn", {})
 
         # --- самообучение: навыки, правила, самопереписываемый код ---
-        self._base_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        self._base_dir = self._data_dir()
+        self._seed_data_files()
         self.skills = _load_json(os.path.join(self._base_dir, "skills.json"), [])
         self.extra_rules = _load_json(
             os.path.join(self._base_dir, "learned_rules.json"),
@@ -772,9 +773,45 @@ class MainWindow(QMainWindow):
         self._build_ai_panel()
         self._build_toolbar()
 
+    def _data_dir(self):
+        """Папка данных пользователя: %APPDATA%\\PuTTY-AI на Windows
+        (рядом с exe писать запрещено в защищённых папках)."""
+        if os.name == "nt":
+            root = os.environ.get("APPDATA") or os.path.expanduser("~")
+            d = os.path.join(root, "PuTTY-AI")
+        else:
+            d = os.path.dirname(os.path.abspath(sys.argv[0]))
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            d = os.path.dirname(os.path.abspath(sys.argv[0]))
+        return d
+
+    def _seed_data_files(self):
+        """Первый запуск exe: копируем встроенные данные в папку
+        пользователя, чтобы программа могла их дополнять."""
+        sources = []
+        if hasattr(sys, "_MEIPASS"):
+            sources.append(sys._MEIPASS)
+        sources.append(os.path.dirname(os.path.abspath(sys.argv[0])))
+        for name in ("skills.json", "learned_rules.json", "user_patches.py",
+                     "learned_cases.md", "prompt_tuning.md"):
+            dst = os.path.join(self._base_dir, name)
+            if os.path.exists(dst):
+                continue
+            for src_dir in sources:
+                src = os.path.join(src_dir, name)
+                if os.path.exists(src):
+                    try:
+                        shutil.copyfile(src, dst)
+                    except OSError:
+                        pass
+                    break
+
     def _load_config(self):
         """Читает config.json (настройки ИИ + последнее подключение)."""
-        dirs = [os.path.dirname(os.path.abspath(sys.argv[0]))]
+        dirs = [self._base_dir,
+                os.path.dirname(os.path.abspath(sys.argv[0]))]
         if hasattr(sys, "_MEIPASS"):
             dirs.append(sys._MEIPASS)
         for d in dirs:
@@ -789,8 +826,7 @@ class MainWindow(QMainWindow):
     def _save_config(self):
         """Сохраняет настройки ИИ и параметры подключения в config.json."""
         try:
-            path = os.path.join(
-                os.path.dirname(os.path.abspath(sys.argv[0])), "config.json")
+            path = os.path.join(self._base_dir, "config.json")
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"settings": self.settings, "conn": self._conn},
                           f, ensure_ascii=False, indent=1)
@@ -798,8 +834,9 @@ class MainWindow(QMainWindow):
             pass
 
     def _load_kb(self):
-        """Загружает базу знаний по ошибкам U-Boot (рядом с exe/скриптом)."""
-        dirs = [os.path.dirname(os.path.abspath(sys.argv[0]))]
+        """Загружает базу знаний (папка пользователя, рядом с exe, в exe)."""
+        dirs = [self._base_dir,
+                os.path.dirname(os.path.abspath(sys.argv[0]))]
         if hasattr(sys, "_MEIPASS"):  # PyInstaller --onefile
             dirs.append(sys._MEIPASS)
         for d in dirs:

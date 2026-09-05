@@ -766,6 +766,7 @@ class MainWindow(QMainWindow):
         self._verifying = False
         self._reflect_used = 0
         self._session_log = None
+        self._boot_armed = True
         self._start_session_log()
         QTimer.singleShot(2000, self._check_update)
 
@@ -1113,6 +1114,7 @@ class MainWindow(QMainWindow):
         self.term.insert_remote(text)
         self._log_io("OUT", text)
         self._maybe_expect_done()
+        self._try_boot_catch(text)
         self._watchdog_check(self.term.last_output(20))
         if self._expecting and "**" in text and self.chk_crew.isChecked():
             self._agent_history.append(
@@ -1993,6 +1995,23 @@ class MainWindow(QMainWindow):
         self.chk_lazy = QCheckBox(
             "Ленивый режим (ponytail): минимум команд, без over-engineering")
         self.chk_lazy.setChecked(True)
+        self.chk_bootcatch = QCheckBox(
+            "Сам перехватывать загрузку (UART): по баннеру отправить клавишу")
+        self.chk_bootcatch.setChecked(False)
+        self.boot_key_combo = QComboBox()
+        for label, key in (("Пробел → консоль", " "),
+                           ("Tab → обновление с USB", "\t"),
+                           ("Esc → консоль", "\x1b"),
+                           ("x → консоль", "x"),
+                           ("Enter", "\r"),
+                           ("— (только наблюдать)", "")):
+            self.boot_key_combo.addItem(label, key)
+        self.boot_key_combo.setEnabled(False)
+        self.chk_bootcatch.toggled.connect(self.boot_key_combo.setEnabled)
+        row_b = QHBoxLayout()
+        row_b.addWidget(self.chk_bootcatch)
+        row_b.addWidget(self.boot_key_combo)
+        l0.addLayout(row_b)
         row0 = QHBoxLayout()
         row0.addWidget(QLabel("Макс. шагов:"))
         self.agent_steps_spin = QSpinBox()
@@ -2188,9 +2207,35 @@ class MainWindow(QMainWindow):
     def _on_connected_auto(self):
         """После подключения: отметить + (по галочке) автоанализ."""
         self.term.set_connected(True)
+        self._boot_armed = True   # вооружаем авто-перехват загрузки
         if self.chk_autoanalysis.isChecked() and \
                 self.settings.get("base_url"):
             QTimer.singleShot(2000, self._full_analysis)
+
+    # ---------- авто-перехват загрузки (UART) ----------
+    BOOT_BANNER_PATTERNS = ("U-Boot", "DRAM:", "BootROM", "BROM",
+                            "HAL_DDR", "SPI Nor")
+
+    def _try_boot_catch(self, text):
+        """Увидели баннер загрузки → сами отправляем клавишу перехвата."""
+        if not getattr(self, "_boot_armed", False):
+            return
+        if not self.chk_bootcatch.isChecked():
+            return
+        if not any(p in text for p in self.BOOT_BANNER_PATTERNS):
+            return
+        self._boot_armed = False
+        label = self.boot_key_combo.currentText()
+        self.ai_output.appendPlainText(
+            "⚡ авто-перехват загрузки: отправляю «%s»\n" % label)
+        self._send_boot_key(3)
+
+    def _send_boot_key(self, count):
+        key_seq = self.boot_key_combo.currentData()
+        if not key_seq or count <= 0:
+            return
+        self._send_key(key_seq)
+        QTimer.singleShot(350, lambda: self._send_boot_key(count - 1))
 
     def _on_disconnected(self, err):
         self.term.set_connected(False)

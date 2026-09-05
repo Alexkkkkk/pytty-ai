@@ -31,6 +31,11 @@ try:
 except ImportError:
     paramiko = None
 
+try:
+    import serial
+except ImportError:
+    serial = None
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
@@ -977,7 +982,7 @@ class MainWindow(QMainWindow):
         lines.extend(["```", ""])
         entry = "\n".join(lines)
         saved = None
-        dirs = [os.path.dirname(os.path.abspath(sys.argv[0]))]
+        dirs = [self._base_dir]
         if hasattr(sys, "_MEIPASS"):
             dirs.append(sys._MEIPASS)
         for d in dirs:
@@ -1487,9 +1492,9 @@ class MainWindow(QMainWindow):
                 ret = QMessageBox.question(
                     self, "Обновление PuTTY-AI",
                     "Доступна версия %s.\nОткрыть страницу загрузки?" % tag,
-                    QMessageBox.StandardButton.Yes |
-                    QMessageBox.StandardButton.No)
-                if ret == QMessageBox.StandardButton.Yes:
+                    QMessageBox.Yes |
+                    QMessageBox.No)
+                if ret == QMessageBox.Yes:
                     QDesktopServices.openUrl(QUrl(url))
         except Exception:
             pass
@@ -1841,8 +1846,8 @@ class MainWindow(QMainWindow):
                 self, "⛔ ОПАСНАЯ КОМАНДА",
                 "Команда может ПОЛНОСТЬЮ СТЕРЕТЬ флешку (eMMC/SPI/NAND)!\n\n"
                 "> " + cmd + "\n\nПродолжить на свой страх и риск?",
-                QMessageBox.StandardButton.Yes |
-                QMessageBox.StandardButton.No)
+                QMessageBox.Yes |
+                QMessageBox.No)
             if ret != QMessageBox.Yes:
                 self._agent_finish("опасная команда отклонена пользователем")
                 return
@@ -1854,8 +1859,8 @@ class MainWindow(QMainWindow):
             ret = QMessageBox.question(
                 self, "Авто-исправление — шаг %d" % (self._agent_steps + 1),
                 "Выполнить команду?\n\n" + cmd,
-                QMessageBox.StandardButton.Yes |
-                QMessageBox.StandardButton.No)
+                QMessageBox.Yes |
+                QMessageBox.No)
             if ret != QMessageBox.Yes:
                 self._agent_finish("отменено пользователем")
                 return
@@ -2321,8 +2326,8 @@ class MainWindow(QMainWindow):
                 self, "Опасная команда",
                 "Команда может повредить данные на флешке!\n\n> " + cmd +
                 "\n\nВыполнить?",
-                QMessageBox.StandardButton.Yes |
-                QMessageBox.StandardButton.No)
+                QMessageBox.Yes |
+                QMessageBox.No)
             if ret != QMessageBox.Yes:
                 return
         # вставляем, только если терминал не занят своей строкой

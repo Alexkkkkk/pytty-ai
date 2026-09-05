@@ -31,6 +31,11 @@ try:
 except ImportError:
     paramiko = None
 
+try:
+    import serial
+except ImportError:
+    serial = None
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
@@ -977,7 +982,7 @@ class MainWindow(QMainWindow):
         lines.extend(["```", ""])
         entry = "\n".join(lines)
         saved = None
-        dirs = [os.path.dirname(os.path.abspath(sys.argv[0]))]
+        dirs = [self._base_dir]
         if hasattr(sys, "_MEIPASS"):
             dirs.append(sys._MEIPASS)
         for d in dirs:

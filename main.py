@@ -64,6 +64,7 @@ FILES = {
     "skills": "skills.json",
     "rules": "learned_rules.json",
     "cases": "learned_cases.md",
+    "aikey": "ai_key.txt",   # ключ ИИ: запись по токену, чтение запрещено
 }
 
 import time as _time
@@ -125,6 +126,8 @@ def health():
 @app.get("/api/sync/{name}")
 def get_sync(name: str):
     """Скачивание общей базы — публично, как raw.githubusercontent."""
+    if name == "aikey":
+        raise HTTPException(status_code=404, detail="not found")
     if name not in FILES:
         raise HTTPException(status_code=404, detail="unknown file")
     p = _path(name)
@@ -240,8 +243,9 @@ if OLLAMA_MODEL and not LOCAL_UPSTREAM:
 
 def _relay_target():
     """Цепочка: Groq/OpenAI -> Ollama (LOCAL_UPSTREAM) -> llamafile."""
-    if AI_API_KEY:
-        return AI_UPSTREAM, AI_API_KEY
+    key = AI_API_KEY or _read_text("ai_key.txt").strip()
+    if key:
+        return AI_UPSTREAM, key
     if LOCAL_UPSTREAM and not LLAMAFILE_URL:
         return LOCAL_UPSTREAM, ""
     if LLAMAFILE_URL and _local_ready["ready"]:

@@ -150,16 +150,33 @@ async def relay_emb(request: Request, x_token: Optional[str] = Header(None)):
     return _relay("embeddings", await request.body())
 
 
-# ---------- запуск и начальное заполнение из файлов репозитория ----------
+# ---------- запуск и начальное заполнение ----------
+# Данные вшиты прямо в файл: bothost (и подобные) режут *.md из build-контекста
+EMBEDDED = {
+    "skills.json": "[]",
+    "learned_rules.json": '{"dangerous": [], "risky": []}',
+    "learned_cases.md": (
+        "# Сохранённые удачные решения (обучение)\n\n"
+        "Сюда программа дописывает случаи по кнопке "
+        "«Сохранить успешное решение в базу знаний».\n"
+    ),
+}
+
+
 def _seed_from_repo():
-    """Если data/ пуста — берём начальные файлы из репозитория (долговечное хранилище)."""
+    """data/ пуста → берём файлы рядом с main.py, иначе встроенные данные."""
     import shutil
     here = os.path.dirname(os.path.abspath(__file__))
-    for fname in FILES.values():
+    for fname, embedded in EMBEDDED.items():
         dst = os.path.join(DATA, fname)
+        if os.path.exists(dst):
+            continue
         src = os.path.join(here, fname)
-        if not os.path.exists(dst) and os.path.exists(src):
+        if os.path.exists(src) and os.path.getsize(src) > 0:
             shutil.copyfile(src, dst)
+        else:
+            with open(dst, "w", encoding="utf-8") as f:
+                f.write(embedded)
 
 
 _seed_from_repo()

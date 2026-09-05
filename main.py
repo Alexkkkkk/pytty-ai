@@ -49,6 +49,12 @@ AI_API_KEY = os.environ.get("AI_API_KEY", "")
 # LOCAL_UPSTREAM: готовый OpenAI-совместимый endpoint (Ollama и т.п.)
 # Ollama на любом ПК: LOCAL_UPSTREAM=http://192.168.1.50:11434/v1
 LLAMAFILE_URL = os.environ.get("LLAMAFILE_URL", "")
+# OLLAMA_MODEL: автоустановка Ollama на сервере и скачивание модели
+# (например qwen2.5:0.5b). Работает, только если LOCAL_UPSTREAM не задан.
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "")
+OLLAMA_PORT = int(os.environ.get("OLLAMA_PORT", "11435"))
+OLLAMA_TGZ = os.environ.get("OLLAMA_TGZ",
+    "https://ollama.com/download/ollama-linux-amd64.tgz")
 LOCAL_UPSTREAM = os.environ.get("LOCAL_UPSTREAM", "")
 LOCAL_PORT = int(os.environ.get("LOCAL_PORT", "8081"))
 _local_proc = None
@@ -179,24 +185,84 @@ def _start_llamafile():
         print("llamafile start failed:", ex)
 
 
+def _start_ollama():
+    """Автоустановка Ollama на сервере + скачивание модели."""
+    global LOCAL_UPSTREAM
+    if not OLLAMA_MODEL or LOCAL_UPSTREAM:
+        return
+    base = os.path.join(DATA, "ollama")
+    binary = os.path.join(base, "ollama")
+    try:
+        os.makedirs(base, exist_ok=True)
+        if not os.path.exists(binary):
+            tgz = os.path.join(base, "ollama.tgz")
+            if not os.path.exists(tgz) or os.path.getsize(tgz) < 1_000_000:
+                tmp = tgz + ".part"
+                with urllib.request.urlopen(OLLAMA_TGZ, timeout=1200) as r, \
+                        open(tmp, "wb") as f:
+                    shutil.copyfileobj(r, f, 1024 * 1024)
+                os.replace(tmp, tgz)
+            import tarfile
+            with tarfile.open(tgz) as tf:
+                tf.extractall(base)
+            # бинарник лежит в ./ollama-linux-amd64/ или корне архива
+            for root, _dirs, files in os.walk(base):
+                if "ollama" in files:
+                    binary = os.path.join(root, "ollama")
+                    break
+            os.chmod(binary, 0o755)
+        env = dict(os.environ, OLLAMA_HOST="127.0.0.1:%d" % OLLAMA_PORT)
+        log = open(os.path.join(base, "serve.log"), "ab")
+        subprocess.Popen([binary, "serve"], env=env,
+                         stdout=log, stderr=subprocess.STDOUT)
+        LOCAL_UPSTREAM = "http://127.0.0.1:%d/v1" % OLLAMA_PORT
+        # ждём демон, затем качаем модель
+        import time as _t
+        for _ in range(120):
+            _t.sleep(5)
+            try:
+                with urllib.request.urlopen(
+                        "http://127.0.0.1:%d/" % OLLAMA_PORT, timeout=3) as r:
+                    break
+            except Exception:
+                pass
+        subprocess.call([binary, "pull", OLLAMA_MODEL], env=env,
+                        stdout=log, stderr=subprocess.STDOUT)
+    except Exception as ex:
+        print("ollama start failed:", ex)
+
+
 if LLAMAFILE_URL:
     threading.Thread(target=_start_llamafile, daemon=True).start()
+if OLLAMA_MODEL and not LOCAL_UPSTREAM:
+    threading.Thread(target=_start_ollama, daemon=True).start()
 
 
 def _relay_target():
+    """Цепочка: Groq/OpenAI -> Ollama (LOCAL_UPSTREAM) -> llamafile."""
     if AI_API_KEY:
         return AI_UPSTREAM, AI_API_KEY
-    if LOCAL_UPSTREAM and (not LLAMAFILE_URL or _local_ready["ready"]):
+    if LOCAL_UPSTREAM and not LLAMAFILE_URL:
+        return LOCAL_UPSTREAM, ""
+    if LLAMAFILE_URL and _local_ready["ready"]:
+        return "http://127.0.0.1:%d/v1" % LOCAL_PORT, ""
+    if LOCAL_UPSTREAM:
         return LOCAL_UPSTREAM, ""
     return None, None
 
 
 @app.get("/api/local_model")
 def local_model_status():
-    return {"url": LLAMAFILE_URL or LOCAL_UPSTREAM or None,
-            "running": bool(_local_proc and _local_proc.poll() is None),
-            "ready": _local_ready["ready"],
-            "port": LOCAL_PORT if (LLAMAFILE_URL or LOCAL_UPSTREAM) else None}
+    ollama_url = ("http://127.0.0.1:%d/v1" % OLLAMA_PORT
+                  if OLLAMA_MODEL else None)
+    return {"llamafile": {"url": LLAMAFILE_URL or None,
+                          "running": bool(_local_proc and _local_proc.poll() is None),
+                          "ready": _local_ready["ready"],
+                          "port": LOCAL_PORT if LLAMAFILE_URL else None},
+            "ollama": {"model": OLLAMA_MODEL or None,
+                       "url": LOCAL_UPSTREAM if OLLAMA_MODEL else None,
+                       "upstream": LOCAL_UPSTREAM if not OLLAMA_MODEL else None},
+            "ready": _local_ready["ready"] or bool(LOCAL_UPSTREAM)}
 
 
 def _local_watcher():

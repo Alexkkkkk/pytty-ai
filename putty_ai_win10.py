@@ -593,6 +593,16 @@ class AiSettingsDialog(QDialog):
             "  llama-3.1-8b-instant (самая быстрая), qwen-qwq-32b (рассуждения).\n"
             "OpenAI: https://api.openai.com/v1 + ваш ключ."))
 
+        btns = QHBoxLayout()
+        ok = QPushButton("Сохранить")
+        cancel = QPushButton("Отмена")
+        ok.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+        btns.addStretch(1)
+        btns.addWidget(ok)
+        btns.addWidget(cancel)
+        lay.addRow(btns)
+
     def _browse_llamafile(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "llamafile.exe", "", "Исполняемые файлы (*.exe)")
@@ -607,16 +617,6 @@ class AiSettingsDialog(QDialog):
             self.base.setText(url)
         if model:
             self.model.setText(model)
-
-        btns = QHBoxLayout()
-        ok = QPushButton("Сохранить")
-        cancel = QPushButton("Отмена")
-        ok.clicked.connect(self.accept)
-        cancel.clicked.connect(self.reject)
-        btns.addStretch(1)
-        btns.addWidget(ok)
-        btns.addWidget(cancel)
-        lay.addRow(btns)
 
 
 def _cosine(a, b):
@@ -1300,7 +1300,9 @@ class MainWindow(QMainWindow):
         self._expecting = True
         delay = self.agent_delay_spin.value()
         self._expect_deadline = time.time() + max(30, delay * 6)
-        self._expect_poll()
+        self._maybe_expect_done()   # промпт уже на экране?
+        if self._expecting:
+            self._expect_poll()
 
     def _expect_poll(self):
         """Проверка дедлайна (промпт ловится в _on_term_output)."""

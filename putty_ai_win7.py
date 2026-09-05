@@ -769,6 +769,7 @@ class MainWindow(QMainWindow):
         self._boot_armed = True
         self._start_session_log()
         QTimer.singleShot(2000, self._check_update)
+        QTimer.singleShot(2500, self._startup_sync)
 
         # --- семантическая память, ватчдог, бригада ---
         self._vec_cache = {}
@@ -1680,6 +1681,160 @@ class MainWindow(QMainWindow):
             "⚒ Промпты настроены по журналу (prompt_tuning.md), "
             "вступает в силу сразу\n")
 
+    # ---------- Синхронизация базы знаний (все терминалы мастерской) ----------
+    SYNC_FILES = ("skills.json", "learned_rules.json", "learned_cases.md")
+
+    def _startup_sync(self):
+        if self.chk_sync_auto.isChecked():
+            self._sync_download()
+
+    def _http_get(self, url, headers=None, timeout=15):
+        req = urllib.request.Request(url, headers=headers or {})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
+
+    def _merge_skills(self, remote):
+        """Слияние навыков: по первой строке триггера, лучший hits/vec."""
+        def key(s):
+            return str(s.get("trigger", "")).splitlines()[0][:60]
+        local = {key(s): s for s in self.skills}
+        added = updated = 0
+        for s in remote if isinstance(remote, list) else []:
+            k = key(s)
+            if not k:
+                continue
+            if k in local:
+                a, b = local[k], s
+                if int(b.get("hits", 0)) > int(a.get("hits", 0)):
+                    a["hits"] = b.get("hits", 0)
+                    updated += 1
+                if not a.get("solution") and b.get("solution"):
+                    a["solution"] = b["solution"]
+                if not a.get("vec") and b.get("vec"):
+                    a["vec"] = b["vec"]
+                if b.get("dangerous"):
+                    a["dangerous"] = True
+            else:
+                self.skills.append(s)
+                local[k] = s
+                added += 1
+        return added, updated
+
+    def _merge_rules(self, remote):
+        if not isinstance(remote, dict):
+            return 0
+        n = 0
+        for lvl in ("dangerous", "risky"):
+            for p in remote.get(lvl, []):
+                if p not in self.extra_rules.setdefault(lvl, []):
+                    self.extra_rules[lvl].append(p)
+                    n += 1
+        return n
+
+    def _merge_cases(self, remote_text):
+        """Дописываем случаи, которых ещё нет (дедуп по сигнатуре строки)."""
+        try:
+            with open(os.path.join(self._base_dir, "learned_cases.md"),
+                      encoding="utf-8") as f:
+                local_text = f.read()
+        except OSError:
+            local_text = ""
+        blocks = [b for b in remote_text.split("## Удачный случай") if b.strip()]
+        new_blocks = 0
+        append = ""
+        for b in blocks:
+            sig = ""
+            for ln in b.splitlines():
+                ln = ln.strip()
+                if ln and not ln.startswith("#"):
+                    sig = ln[:60]
+                    break
+            if sig and sig not in local_text:
+                append += "\n## Удачный случай" + b
+                new_blocks += 1
+        if append:
+            try:
+                with open(os.path.join(self._base_dir, "learned_cases.md"),
+                          "a", encoding="utf-8") as f:
+                    f.write(append)
+            except OSError:
+                return 0
+        return new_blocks
+
+    def _sync_download(self):
+        """Скачать общую базу из репозитория (чтение публичное)."""
+        repo = self.sync_repo.text().strip() or "Alexkkkkk/pytty-ai"
+        self.settings["gh_repo"] = repo
+        self.sync_status.setText("скачивание…")
+        try:
+            base = "https://raw.githubusercontent.com/%s/main/" % repo
+            rs = json.loads(self._http_get(base + "skills.json").decode("utf-8"))
+            rr = json.loads(self._http_get(base + "learned_rules.json").decode("utf-8"))
+            rc = self._http_get(base + "learned_cases.md").decode("utf-8")
+            a, u = self._merge_skills(rs)
+            nr = self._merge_rules(rr)
+            nc = self._merge_cases(rc)
+            _save_json(os.path.join(self._base_dir, "skills.json"), self.skills)
+            _save_json(os.path.join(self._base_dir, "learned_rules.json"),
+                       self.extra_rules)
+            self.kb_text = self._load_kb()
+            self._curriculum_update()
+            msg = ("✔ база синхронизирована: +%d навыков (обновлено %d), "
+                   "+%d правил, +%d случаев" % (a, u, nr, nc))
+            self.sync_status.setText(msg)
+            self.ai_output.appendPlainText("— " + msg + "\n")
+            self._save_config()
+        except Exception as ex:
+            self.sync_status.setText("ошибка скачивания: %s" % ex)
+            self.ai_output.appendPlainText("[sync: %s]\n" % ex)
+
+    def _sync_upload(self):
+        """Отправить локальную базу в репозиторий (нужен токен write)."""
+        repo = self.sync_repo.text().strip() or "Alexkkkkk/pytty-ai"
+        token = self.sync_token.text().strip()
+        if not token:
+            QMessageBox.information(
+                self, "Синхронизация",
+                "Для отправки нужен токен GitHub с правом write.\n"
+                "Вставьте его в поле «Токен».")
+            return
+        self.settings["gh_repo"] = repo
+        self.settings["gh_token"] = token
+        self.sync_status.setText("отправка…")
+        hdr = {"Authorization": "token " + token,
+               "Accept": "application/vnd.github.v3+json"}
+        try:
+            for name in self.SYNC_FILES:
+                path = os.path.join(self._base_dir, name)
+                with open(path, encoding="utf-8") as f:
+                    content = f.read()
+                api = ("https://api.github.com/repos/%s/contents/%s"
+                       % (repo, name))
+                try:
+                    old = json.loads(self._http_get(api, headers=hdr).decode())
+                    sha = old.get("sha")
+                except Exception:
+                    sha = None
+                import base64 as _b64
+                payload = {"message": "sync: %s от %s"
+                           % (name, datetime.datetime.now().isoformat()[:16]),
+                           "content": _b64.b64encode(content.encode()).decode(),
+                           "branch": "main"}
+                if sha:
+                    payload["sha"] = sha
+                req = urllib.request.Request(
+                    api, data=json.dumps(payload).encode(),
+                    headers={**hdr, "Content-Type": "application/json"},
+                    method="PUT")
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    r.read()
+            self.sync_status.setText("✔ база отправлена в %s" % repo)
+            self.ai_output.appendPlainText("— база отправлена в %s\n" % repo)
+            self._save_config()
+        except Exception as ex:
+            self.sync_status.setText("ошибка отправки: %s" % ex)
+            self.ai_output.appendPlainText("[sync upload: %s]\n" % ex)
+
     # ---------- Полный анализ ----------
     def _full_analysis(self):
         if not self._ai_available():
@@ -2137,6 +2292,29 @@ class MainWindow(QMainWindow):
         l7.addWidget(self.chk_crew)
         l7.addWidget(btn_tune)
         lay.addWidget(g7)
+
+        # -- синхронизация базы знаний между терминалами --
+        g8 = QGroupBox("Синхронизация базы знаний (все терминалы мастерской)")
+        l8 = QFormLayout(g8)
+        self.sync_repo = QLineEdit(self.settings.get("gh_repo",
+                                                     "Alexkkkkk/pytty-ai"))
+        self.sync_token = QLineEdit(self.settings.get("gh_token", ""))
+        self.sync_token.setEchoMode(QLineEdit.Password)
+        self.sync_token.setPlaceholderText("токен с правом write (для отправки)")
+        self.chk_sync_auto = QCheckBox("Скачивать общую базу при запуске")
+        self.chk_sync_auto.setChecked(True)
+        btn_dl = QPushButton("Скачать общую базу")
+        btn_dl.clicked.connect(self._sync_download)
+        btn_ul = QPushButton("Отправить мою базу")
+        btn_ul.clicked.connect(self._sync_upload)
+        self.sync_status = QLabel("не синхронизировано")
+        self.sync_status.setWordWrap(True)
+        l8.addRow("Репозиторий:", self.sync_repo)
+        l8.addRow("Токен:", self.sync_token)
+        l8.addRow(self.chk_sync_auto)
+        l8.addRow(btn_dl, btn_ul)
+        l8.addRow(self.sync_status)
+        lay.addWidget(g8)
 
         dock = QDockWidget("ИИ-помощник")
         dock.setWidget(panel)

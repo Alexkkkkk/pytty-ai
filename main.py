@@ -26,6 +26,9 @@ URL: https://terminalai.bothost.tech/v1
 
 import json
 import os
+import shutil
+import subprocess
+import threading
 import urllib.request
 from typing import Optional
 
@@ -40,6 +43,16 @@ os.makedirs(DATA, exist_ok=True)
 SYNC_TOKEN = os.environ.get("SYNC_TOKEN", "")
 AI_UPSTREAM = os.environ.get("AI_UPSTREAM", "https://api.groq.com/openai/v1")
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
+
+# --- локальные модели ---
+# LLAMAFILE_URL: ссылка на .llamafile -> сервер сам скачает и запустит
+# LOCAL_UPSTREAM: готовый OpenAI-совместимый endpoint (Ollama и т.п.)
+# Ollama на любом ПК: LOCAL_UPSTREAM=http://192.168.1.50:11434/v1
+LLAMAFILE_URL = os.environ.get("LLAMAFILE_URL", "")
+LOCAL_UPSTREAM = os.environ.get("LOCAL_UPSTREAM", "")
+LOCAL_PORT = int(os.environ.get("LOCAL_PORT", "8081"))
+_local_proc = None
+_local_ready = {"ready": False}
 
 FILES = {
     "skills": "skills.json",
@@ -145,15 +158,72 @@ async def put_sync(name: str, request: Request,
     return {"ok": True, "bytes": len(body)}
 
 
+def _start_llamafile():
+    global _local_proc, LOCAL_UPSTREAM
+    if not LLAMAFILE_URL or _local_proc is not None:
+        return
+    path = os.path.join(DATA, "model.llamafile")
+    try:
+        if not os.path.exists(path) or os.path.getsize(path) < 10_000_000:
+            tmp = path + ".part"
+            with urllib.request.urlopen(LLAMAFILE_URL, timeout=900) as r, open(tmp, "wb") as f:
+                shutil.copyfileobj(r, f, 1024 * 1024)
+            os.replace(tmp, path)
+        os.chmod(path, 0o755)
+        log = open(os.path.join(DATA, "llamafile.log"), "ab")
+        _local_proc = subprocess.Popen(
+            [path, "--server", "--port", str(LOCAL_PORT), "--host", "127.0.0.1"],
+            stdout=log, stderr=subprocess.STDOUT)
+        LOCAL_UPSTREAM = "http://127.0.0.1:%d/v1" % LOCAL_PORT
+    except Exception as ex:
+        print("llamafile start failed:", ex)
+
+
+if LLAMAFILE_URL:
+    threading.Thread(target=_start_llamafile, daemon=True).start()
+
+
+def _relay_target():
+    if AI_API_KEY:
+        return AI_UPSTREAM, AI_API_KEY
+    if LOCAL_UPSTREAM and (not LLAMAFILE_URL or _local_ready["ready"]):
+        return LOCAL_UPSTREAM, ""
+    return None, None
+
+
+@app.get("/api/local_model")
+def local_model_status():
+    return {"url": LLAMAFILE_URL or LOCAL_UPSTREAM or None,
+            "running": bool(_local_proc and _local_proc.poll() is None),
+            "ready": _local_ready["ready"],
+            "port": LOCAL_PORT if (LLAMAFILE_URL or LOCAL_UPSTREAM) else None}
+
+
+def _local_watcher():
+    import time as _t
+    while True:
+        _t.sleep(5)
+        if _local_proc is not None and not _local_ready["ready"]:
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:%d/health" % LOCAL_PORT, timeout=3) as r:
+                    if r.status == 200:
+                        _local_ready["ready"] = True
+            except Exception:
+                pass
+
+
+threading.Thread(target=_local_watcher, daemon=True).start()
+
+
 def _relay(path: str, body: bytes):
     """Проксирование запроса к Groq/OpenAI серверным ключом."""
-    if not AI_API_KEY:
-        raise HTTPException(status_code=503, detail="AI_API_KEY not set")
+    upstream, key = _relay_target()
+    if not upstream:
+        raise HTTPException(status_code=503, detail="no AI backend: set AI_API_KEY or LLAMAFILE_URL / LOCAL_UPSTREAM")
     req = urllib.request.Request(
-        AI_UPSTREAM.rstrip("/") + "/" + path,
+        upstream.rstrip("/") + "/" + path,
         data=body,
-        headers={"Content-Type": "application/json",
-                 "Authorization": "Bearer " + AI_API_KEY},
+        headers=({**{"Content-Type": "application/json"}, **({"Authorization": "Bearer " + key} if key else {})}),
     )
     try:
         with urllib.request.urlopen(req, timeout=180) as r:
@@ -243,7 +313,7 @@ a{color:#58a6ff}
 #refresh{float:right}
 </style></head><body>
 <header><span class="dot"></span><h1>TerminalAI — сервер мастерской</h1>
-<span class="small" id="uptime"></span></header>
+<span class="small" id="uptime"></span><span class="small" id="lmodel" style="margin-left:auto"></span></header>
 <div class="wrap">
 <div class="cards">
 <div class="card"><div class="v" id="c-skills">—</div><div class="l">навыков в базе</div></div>
@@ -284,6 +354,12 @@ async function load(){
       const sol = (s.solution||[]).join('; ');
       tb.innerHTML += '<tr><td>'+escapeHtml(trg)+'</td><td class="small">'+escapeHtml(sol)+'</td><td>'+(s.hits||0)+'</td><td>'+(s.dangerous?'<span class="badge b-red">опасно</span>':'')+'</td></tr>';
     });
+    if(d.local_model){
+      const lm = d.local_model;
+      document.getElementById('lmodel').textContent = lm.ready
+        ? '🧠 локальная модель: работает (порт ' + lm.port + ')'
+        : (lm.url ? '🧠 локальная модель: загружается…' : '');
+    }
     if(d.level){
       document.getElementById('lvl-name').textContent = d.level.name;
       document.getElementById('lvl-xp').textContent = d.level.xp;
@@ -328,6 +404,7 @@ def api_stats():
         "skills_data": skills[-100:],
         "rules": rules,
         "level": _learning_level(skills, cases.count("## Удачный случай")),
+        "local_model": local_model_status(),
         "daily": {d: HIST[d] for d in sorted(HIST)[-14:]},
     }
 

@@ -106,7 +106,7 @@ LAZY_LADDER = (
 
 def _cmd_safety(cmd):
     """('blocked'|'risky'|'ok', совпавший шаблон) для строки команды."""
-    low = cmd.lower().strip()
+    low = " ".join(cmd.lower().split())   # нормализация пробелов/табов
     for p in DANGEROUS_CMDS:
         if p in low:
             return "blocked", p
@@ -1031,6 +1031,7 @@ class MainWindow(QMainWindow):
         """Загружает user_patches.py с валидацией (паттерн mue-x):
         ast.parse, только безопасные конструкции верхнего уровня,
         бэкап перед применением, откат при поломке."""
+        self._output_hook = None   # сброс: сломанный файл не оставляет старый хук
         path = os.path.join(self._base_dir, "user_patches.py")
         bak = os.path.join(self._base_dir, "user_patches.bak")
         try:

@@ -708,6 +708,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PuTTY-AI — SSH-клиент с ИИ-помощником")
         self.resize(1000, 640)
 
+        # --- папка данных пользователя нужна всем остальным —
+        self._base_dir = self._data_dir()
+
         # --- настройки: из config.json (если есть) или по умолчанию ---
         self.config = self._load_config()
         self.settings = self.config.get("settings", {
@@ -718,7 +721,6 @@ class MainWindow(QMainWindow):
         self._conn = self.config.get("conn", {})
 
         # --- самообучение: навыки, правила, самопереписываемый код ---
-        self._base_dir = self._data_dir()
         self._seed_data_files()
         self.skills = _load_json(os.path.join(self._base_dir, "skills.json"), [])
         self.extra_rules = _load_json(

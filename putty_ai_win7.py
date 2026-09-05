@@ -776,7 +776,17 @@ class MainWindow(QMainWindow):
         self.term = Terminal()
         self.term.insert_remote(
             "PuTTY-AI\nПодключитесь через меню «Подключение».\n"
-            "ИИ-помощник: правая панель, автодополне    def _config_paths(self):
+            "ИИ-помощник: правая панель, автодополнение по Tab.\n\n")
+        self.setCentralWidget(self.term)
+
+        self.term.sendText.connect(self._send_to_server)
+        self.term.autocompleteRequested.connect(self._autocomplete)
+
+        # --- панель ИИ ---
+        self._build_ai_panel()
+        self._build_toolbar()
+
+    def _config_paths(self):
         """Возвращает доступные места для config.json."""
         paths = []
         appdata = os.environ.get("APPDATA", "").strip()
@@ -828,13 +838,6 @@ class MainWindow(QMainWindow):
                 except OSError:
                     pass
         return False
-
-path.abspath(sys.argv[0])), "config.json")
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump({"settings": self.settings, "conn": self._conn},
-                          f, ensure_ascii=False, indent=1)
-        except OSError:
-            pass
 
     def _load_kb(self):
         """Загружает базу знаний по ошибкам U-Boot (рядом с exe/скриптом)."""

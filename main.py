@@ -516,7 +516,7 @@ a{color:#58a6ff}
 <div class="chat">
 <h3 style="color:#9fd0ff;margin-top:0">💬 Спросить ИИ</h3>
 <div class="chat-cfg">
-<input id="chat-token" type="password" placeholder="пароль (X-Token)">
+<input id="chat-token" type="password" value="putty-ai-2026" placeholder="пароль (X-Token)">
 <input id="chat-model" placeholder="модель" style="width:220px">
 </div>
 <div id="chat-log"></div>

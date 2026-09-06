@@ -409,6 +409,18 @@ tr:hover td{background:#1c2128}
 .bar .n{font-size:10px;color:#c9d1d9;text-align:center}
 a{color:#58a6ff}
 #refresh{float:right}
+.chat{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px;margin-bottom:22px}
+#chat-log{max-height:340px;overflow-y:auto;margin-bottom:12px}
+.msg{padding:8px 12px;border-radius:10px;margin:6px 0;max-width:85%;white-space:pre-wrap;font-size:13px;line-height:1.45}
+.msg.user{background:#1f6feb;color:#fff;margin-left:auto}
+.msg.bot{background:#21262d;border:1px solid #30363d}
+.msg.err{background:#3d1d1d;color:#ff7b72;border:1px solid #f85149}
+.chat-row{display:flex;gap:8px}
+.chat-row input{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#d7dae0;padding:9px 12px;font-size:13px}
+.chat-row button{background:#238636;color:#fff;border:none;border-radius:8px;padding:9px 18px;cursor:pointer;font-size:13px}
+.chat-row button:disabled{opacity:.5}
+.chat-cfg{display:flex;gap:8px;margin-bottom:10px}
+.chat-cfg input{width:180px;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#8b949e;padding:6px 10px;font-size:12px}
 </style></head><body>
 <header><span class="dot"></span><h1>TerminalAI — сервер мастерской</h1>
 <span class="small" id="uptime"></span><span class="small" id="lmodel" style="margin-left:auto"></span></header>
@@ -433,6 +445,18 @@ a{color:#58a6ff}
 <h3 style="color:#9fd0ff">Правила безопасности</h3>
 <table><thead><tr><th style="width:110px">Уровень</th><th>Паттерн</th></tr></thead>
 <tbody id="rules"></tbody></table>
+<div class="chat">
+<h3 style="color:#9fd0ff;margin-top:0">💬 Спросить ИИ</h3>
+<div class="chat-cfg">
+<input id="chat-token" type="password" placeholder="пароль (X-Token)">
+<input id="chat-model" placeholder="модель" style="width:220px">
+</div>
+<div id="chat-log"></div>
+<div class="chat-row">
+<input id="chat-in" placeholder="Напишите вопрос… (Enter — отправить)">
+<button id="chat-send" onclick="chatSend()">Отправить</button>
+</div>
+</div>
 <p class="small">Обновление каждые 15 секунд · API: <a href="/docs">/docs</a> · синхронизация: <code>/api/sync/*</code></p>
 </div>
 <script>
@@ -482,6 +506,61 @@ async function load(){
   }catch(e){}
 }
 function escapeHtml(t){ return String(t).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+const chatHist = [];
+document.getElementById('chat-token').value = localStorage.getItem('srv_tok') || '';
+document.getElementById('chat-model').value = localStorage.getItem('srv_mdl') || 'qwen2.5:0.5b';
+document.getElementById('chat-in').addEventListener('keydown', e => { if(e.key === 'Enter') chatSend(); });
+
+function chatAdd(cls, text){
+  const log = document.getElementById('chat-log');
+  const div = document.createElement('div');
+  div.className = 'msg ' + cls;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function chatSend(){
+  const inp = document.getElementById('chat-in');
+  const btn = document.getElementById('chat-send');
+  const text = inp.value.trim();
+  if(!text) return;
+  const token = document.getElementById('chat-token').value.trim();
+  const model = document.getElementById('chat-model').value.trim() || 'qwen2.5:0.5b';
+  localStorage.setItem('srv_tok', token);
+  localStorage.setItem('srv_mdl', model);
+  chatAdd('user', text);
+  chatHist.push({role:'user', content:text});
+  if(chatHist.length > 20) chatHist.splice(0, chatHist.length - 20);
+  inp.value = ''; btn.disabled = true;
+  chatAdd('bot', '…');
+  const pending = document.getElementById('chat-log').lastChild;
+  try{
+    const r = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Token': token},
+      body: JSON.stringify({model: model, messages: chatHist.slice(), max_tokens: 800})
+    });
+    const d = await r.json();
+    if(r.ok && d.choices && d.choices[0]){
+      const ans = d.choices[0].message.content;
+      pending.textContent = ans;
+      pending.className = 'msg bot';
+      chatHist.push({role:'assistant', content:ans});
+    } else {
+      pending.textContent = 'Ошибка ' + r.status + ': ' + (d.detail || JSON.stringify(d)).slice(0, 300);
+      pending.className = 'msg err';
+      chatHist.pop();
+    }
+  }catch(e){
+    pending.textContent = 'Сеть: ' + e;
+    pending.className = 'msg err';
+    chatHist.pop();
+  }
+  btn.disabled = false;
+  document.getElementById('chat-log').scrollTop = 1e9;
+}
+
 load(); setInterval(load, 15000);
 </script></body></html>"""
 

@@ -499,8 +499,17 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
             ans = rj["choices"][0]["message"]["content"]
             usg = rj.get("usage") or {}
             ms = int((_time.monotonic() - _t0) * 1000)
+            _up, _key = _relay_target()
+            _backend = "?"
+            if _up:
+                _backend = ("Groq/OpenAI" if _key and _up == AI_UPSTREAM
+                            else _up.split("//")[-1].split("/")[0])
             AI_DET.append({"t": _time.strftime("%H:%M:%S"),
                            "model": _bj.get("model") if "_bj" in dir() else None,
+                           "backend": _backend,
+                           "nmsg": len(_bj.get("messages", [])) if "_bj" in dir() else None,
+                           "max_tokens": _bj.get("max_tokens") if "_bj" in dir() else None,
+                           "finish": (rj["choices"][0].get("finish_reason")),
                            "q": (_q or "")[:400], "a": ans[:600], "ms": ms,
                            "ptok": usg.get("prompt_tokens") or usg.get("prompt_eval_count"),
                            "ctok": usg.get("completion_tokens") or usg.get("eval_count"),
@@ -981,7 +990,12 @@ function renderDet(entries){
     const e = entries[i];
     const div = document.createElement('div');
     div.className = 'det';
-    div.innerHTML = '<div class="m">'+esc(e.t)+' · '+(e.model||'модель')+' · '+e.ms+' мс · токены '+(e.ptok||'?')+'+'+(e.ctok||'?')+'</div>'
+    div.innerHTML = '<div class="m">'+esc(e.t)+' · '+(e.model||'модель')
+      +' → <b style="color:#d2a8ff">'+esc(e.backend||'?')+'</b>'
+      +' · '+e.ms+' мс · токены '+(e.ptok||'?')+'+'+(e.ctok||'?')
+      +(e.nmsg ? ' · сообщений: '+e.nmsg : '')
+      +(e.max_tokens ? ' · max_tokens: '+e.max_tokens : '')
+      +' · финиш: '+(e.finish||'?')+'</div>'
       + '<div class="q">В: '+esc(e.q)+'</div>'
       + '<div class="a">О: '+esc(e.a)+'</div>';
     log.appendChild(div);

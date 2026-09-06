@@ -62,7 +62,7 @@ LOCAL_PORT = int(os.environ.get("LOCAL_PORT", "8081"))
 _local_proc = None
 _local_ready = {"ready": False}
 MODEL_STATUS = {"stage": "не настроена", "pct": None}
-AI_ACT = {"now": 0, "total": 0, "last": None}
+AI_ACT = {"now": 0, "total": 0, "last": None, "last_ts": None}
 AI_LOG = []   # журнал запросов: [{t, q, m}]
 AI_LOAD = {}  # нагрузка по минутам: {"HH:MM": {n, ms_sum, ms_max}}
 EVENTS = []   # живой лог: [{t, m}]
@@ -126,6 +126,30 @@ def _ai_log_summary():
         by_hour[e["t"][:2]] = by_hour.get(e["t"][:2], 0) + 1
     return {"by_hour": by_hour,
             "recent": list(reversed(AI_LOG[-30:]))}
+
+
+def _heartbeat():
+    """Каждые 5 минут докладывает, что делает ИИ в простое."""
+    import time as _t
+    _t.sleep(120)
+    while True:
+        _t.sleep(300)
+        if AI_ACT["last_ts"]:
+            idle = int(_t.time() - AI_ACT["last_ts"]) // 60
+        else:
+            idle = None
+        ready = _local_ready["ready"]
+        st = MODEL_STATUS.get("stage", "?")
+        if idle is None:
+            _ev("💤 простой: обращений к ИИ ещё не было · модель: %s" % st)
+        elif idle < 5:
+            continue   # недавно был запрос — не спамим
+        else:
+            _ev("💤 простой %d мин · модель: %s · запросов сегодня: %d"
+                % (idle, st, AI_ACT["total"]))
+
+
+threading.Thread(target=_heartbeat, daemon=True).start()
 
 
 def _read_text_or_none(fname):
@@ -455,6 +479,7 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
     AI_ACT["now"] += 1
     AI_ACT["total"] += 1
     AI_ACT["last"] = _time.strftime("%H:%M:%S")
+    AI_ACT["last_ts"] = _time.time()
     _bump_daily("ai")
     _t0 = _time.monotonic()
     try:
@@ -826,7 +851,11 @@ def dashboard():
 
 @app.get("/api/events")
 def api_events():
-    return {"events": EVENTS[-250:], "n": len(EVENTS)}
+    idle_s = None
+    if AI_ACT["last_ts"]:
+        idle_s = int(_time.time() - AI_ACT["last_ts"])
+    return {"events": EVENTS[-250:], "n": len(EVENTS),
+            "idle_s": idle_s, "ready": _local_ready["ready"]}
 
 
 LOG_PAGE = """<!DOCTYPE html>
@@ -847,6 +876,7 @@ a{color:#58a6ff;text-decoration:none;margin-left:auto}
 <header><span class="dot"></span><b>Живой лог сервера</b>
 <button id="pause" onclick="togglePause()">⏸ пауза</button>
 <button onclick="document.getElementById('log').innerHTML=''">🧹 очистить</button>
+<span id="idle" class="t"></span>
 <a href="/">← дашборд</a></header>
 <div id="log"></div>
 <script>
@@ -873,6 +903,10 @@ async function tick(){
     }
     n = d.n;
     window.scrollTo(0, document.body.scrollHeight);
+    const el = document.getElementById('idle');
+    if(d.idle_s == null){ el.textContent = '💤 обращений к ИИ не было'; }
+    else if(d.idle_s < 60){ el.textContent = '⚡ активен (запрос ' + d.idle_s + ' с назад)'; }
+    else { el.textContent = '💤 простой ' + Math.floor(d.idle_s/60) + ' мин'; }
   }catch(e){}
 }
 function togglePause(){ paused = !paused; document.getElementById('pause').textContent = paused ? '▶ продолжить' : '⏸ пауза'; }

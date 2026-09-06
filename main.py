@@ -163,7 +163,7 @@ def _read_text_or_none(fname):
 # Никакой ИИ не настроен? -> по умолчанию маленькая локальная модель
 # (можно отключить, задав любой из: AI_API_KEY / LOCAL_UPSTREAM / LLAMAFILE_URL)
 if not (AI_API_KEY or LOCAL_UPSTREAM or LLAMAFILE_URL or OLLAMA_MODEL):
-    OLLAMA_MODEL = "qwen2.5:0.5b"
+    OLLAMA_MODEL = "qwen3:0.6b"   # умеет рассуждать (видно «мысли» в логе)
 if AI_API_KEY or _read_text_or_none("ai_key.txt"):
     MODEL_STATUS.update(stage="Groq/OpenAI (облако)", pct=100)
 elif OLLAMA_MODEL:
@@ -496,7 +496,20 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
         resp = _relay("chat/completions", raw)
         try:
             rj = json.loads(resp.body.decode("utf-8", "replace"))
-            ans = rj["choices"][0]["message"]["content"]
+            _msg = rj["choices"][0]["message"]
+            ans = _msg.get("content") or ""
+            _think = _msg.get("reasoning_content") or ""
+            if not _think and "<think>" in ans:
+                _ts = ans.split("<think>", 1)
+                if len(_ts) > 1 and "</think>" in _ts[1]:
+                    _think = _ts[1].split("</think>", 1)[0]
+                    ans = ans.split("</think>", 1)[1]
+            _sys = ""
+            if "_bj" in dir():
+                for _m in _bj.get("messages", []):
+                    if _m.get("role") == "system":
+                        _sys = (_m.get("content") or "")[:400]
+                        break
             usg = rj.get("usage") or {}
             ms = int((_time.monotonic() - _t0) * 1000)
             _up, _key = _relay_target()
@@ -510,6 +523,7 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
                            "nmsg": len(_bj.get("messages", [])) if "_bj" in dir() else None,
                            "max_tokens": _bj.get("max_tokens") if "_bj" in dir() else None,
                            "finish": (rj["choices"][0].get("finish_reason")),
+                           "sys": _sys, "think": _think[:800],
                            "q": (_q or "")[:400], "a": ans[:600], "ms": ms,
                            "ptok": usg.get("prompt_tokens") or usg.get("prompt_eval_count"),
                            "ctok": usg.get("completion_tokens") or usg.get("eval_count"),
@@ -920,6 +934,7 @@ a{color:#58a6ff;text-decoration:none;margin-left:auto}
 .det .q{color:#79c0ff;white-space:pre-wrap}
 .det .a{color:#7ee787;white-space:pre-wrap;margin-top:4px}
 .det .m{color:#8b949e;font-size:11px;margin-top:4px}
+.det .think{color:#e3b341;font-style:italic;white-space:pre-wrap;margin-top:4px;border-left:2px solid #e3b341;padding-left:8px}
 @keyframes bl{50%{opacity:.3}}
 </style></head><body>
 <header><span class="dot"></span><b>Живой лог сервера</b>
@@ -996,6 +1011,8 @@ function renderDet(entries){
       +(e.nmsg ? ' · сообщений: '+e.nmsg : '')
       +(e.max_tokens ? ' · max_tokens: '+e.max_tokens : '')
       +' · финиш: '+(e.finish||'?')+'</div>'
+      + (e.sys ? '<div class="m" style="color:#d2a8ff">🧠 системный промпт: '+esc(e.sys.slice(0,160))+(e.sys.length>160?'…':'')+'</div>' : '')
+      + (e.think ? '<div class="think">💭 мысли: '+esc(e.think)+'</div>' : '')
       + '<div class="q">В: '+esc(e.q)+'</div>'
       + '<div class="a">О: '+esc(e.a)+'</div>';
     log.appendChild(div);

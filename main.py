@@ -914,7 +914,10 @@ def api_events():
             "model": OLLAMA_MODEL or (LLAMAFILE_URL and "llamafile") or "Groq/облако",
             "mem_mb": _mem_mb(),
             "ai_now": AI_ACT["now"], "ai_total": AI_ACT["total"],
-            "ai_det": AI_DET[-60:]}
+            "ai_det": AI_DET[-60:],
+            "last_think": ({"t": AI_DET[-1]["t"],
+                            "think": AI_DET[-1].get("think", "")[:300]}
+                           if AI_DET else None)}
 
 
 LOG_PAGE = """<!DOCTYPE html>
@@ -986,14 +989,20 @@ async function secTick(){
     if(d.ai_now > 0) state = '⚡ ОТВЕЧАЕТ (одновременно: ' + d.ai_now + ')';
     else if(d.idle_s == null) state = '💤 обращений ещё не было';
     else state = '💤 простой ' + Math.floor(d.idle_s/60) + ' мин ' + (d.idle_s%60) + ' с';
-    const line = d.now + ' ' + state + ' · модель: ' + d.model
-      + (d.ready ? ' (загружена)' : ' (не готова)')
-      + (d.mem_mb ? ' · RAM свободно: ' + d.mem_mb + ' МБ' : '')
+    let line = d.now + ' ' + state + ' · модель: ' + d.model
+      + (d.ready ? ' (загружена в RAM' + (d.mem_mb ? ', свободно ' + d.mem_mb + ' МБ' : '') + ')' : ' (не готова)')
       + ' · запросов: ' + d.ai_total;
+    if(d.ai_now === 0 && d.last_think && d.last_think.think){
+      line += ' \n💤 последние мысли (' + d.last_think.t + '): «' + d.last_think.think.slice(0, 120) + '»';
+    }
     if(line === lastSec) return;
     lastSec = line;
     const div = document.createElement('div');
-    div.innerHTML = '<span class="t">' + d.now + '</span> <span class="get">' + esc(line.slice(9)) + '</span>';
+    const nl = line.indexOf('\n');
+    const head = nl === -1 ? line : line.slice(0, nl);
+    const tail = nl === -1 ? '' : line.slice(nl + 1);
+    div.innerHTML = '<span class="t">' + d.now + '</span> <span class="get">' + esc(head.slice(9)) + '</span>'
+      + (tail ? '<div class="think" style="margin-left:70px">' + esc(tail.trim()) + '</div>' : '');
     document.getElementById('log').appendChild(div);
     if(!paused) window.scrollTo(0, document.body.scrollHeight);
   }catch(e){}

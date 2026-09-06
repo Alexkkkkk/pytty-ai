@@ -1832,6 +1832,66 @@ class MainWindow(QMainWindow):
             self.ai_output.appendPlainText(
                 "[ошибка сохранения конфига: %s]\n" % ex)
 
+    def _upload_config(self):
+        """Залить сохранённый конфиг обратно в устройство."""
+        if not (self.ssh and self.ssh.isRunning()):
+            QMessageBox.information(
+                self, "Заливка конфига",
+                "Подключитесь к устройству и повторите.")
+            return
+        startdir = os.path.join(self._base_dir, "configs")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Выберите конфиг для заливки", startdir,
+            "Конфиги (*.conf *.txt);;Все файлы (*)")
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError as ex:
+            QMessageBox.warning(self, "Заливка", "Не удалось прочитать:\n"
+                                                + str(ex))
+            return
+        import re as _re
+        pairs = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith(("**", "#", "<<", "=>")):
+                continue
+            m = _re.match(r"^([A-Za-z0-9_]{2,32})=(.*)$", line)
+            if m:
+                pairs.append((m.group(1), m.group(2).strip()))
+        if not pairs:
+            QMessageBox.warning(self, "Заливка",
+                                "В файле не найдено переменных NAME=VALUE.")
+            return
+        pairs = pairs[:80]
+        ret = QMessageBox.question(
+            self, "Заливка конфига",
+            "Залить %d переменных из\n%s\n\n%s?\n\n"
+            "Осторожно: saveenv пишет во флеш устройства!"
+            % (len(pairs), os.path.basename(path),
+               "\n".join("%s=%s" % (k, v[:40]) for k, v in pairs[:10])),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        profile = self.profile_combo.currentData()
+        if profile == "uboot":
+            cmds = ["setenv %s %s" % (k, v) for k, v in pairs]
+            cmds.append("saveenv")
+        else:
+            cmds = ["fw_setenv %s %s" % (k, v) for k, v in pairs]
+        self.ai_output.appendPlainText(
+            "⬆ заливаю конфиг (%d команд)…\n" % len(cmds))
+        self._run_cmds(cmds, 0)
+
+    def _run_cmds(self, cmds, i):
+        if i >= len(cmds):
+            self.ai_output.appendPlainText("— конфиг залит ✔\n")
+            return
+        self._type_command(cmds[i])
+        QTimer.singleShot(700, lambda: self._run_cmds(cmds, i + 1))
+
     # ---------- Синхронизация базы знаний (все терминалы мастерской) ----------
     SYNC_FILES = ("skills.json", "learned_rules.json", "learned_cases.md",
                   "models.json")
@@ -2566,8 +2626,11 @@ class MainWindow(QMainWindow):
         btn_det.clicked.connect(self._detect_model)
         btn_cfg = QPushButton("💾 Скачать конфиг")
         btn_cfg.clicked.connect(self._download_config)
+        btn_up = QPushButton("⬆ Залить конфиг")
+        btn_up.clicked.connect(self._upload_config)
         row_m.addWidget(btn_det)
         row_m.addWidget(btn_cfg)
+        row_m.addWidget(btn_up)
         l9.addRow(row_m)
         lay.addWidget(g9)
 

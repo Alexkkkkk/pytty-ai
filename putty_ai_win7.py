@@ -1730,6 +1730,108 @@ class MainWindow(QMainWindow):
     def _current_model(self):
         return self.m_list.currentData() or ""
 
+    # ---------- автоопределение модели и конфига устройства ----------
+    PROBES = {
+        "uboot": ["version", "bdinfo", "printenv"],
+        "linux": ["cat /proc/device-tree/model 2>/dev/null",
+                  "cat /proc/cmdline",
+                  "fw_printenv 2>/dev/null | head -40"],
+    }
+
+    def _detect_model(self):
+        """Сам опрашивает устройство и заполняет реестр."""
+        if not (self.ssh and self.ssh.isRunning()):
+            QMessageBox.information(
+                self, "Определение модели",
+                "Подключитесь к устройству (Serial/SSH/Эмулятор) "
+                "и повторите.")
+            return
+        profile = self.profile_combo.currentData()
+        probes = self.PROBES.get(profile, self.PROBES["uboot"])
+        self.ai_output.appendPlainText("🔍 опрашиваю устройство…\n")
+        self._detect_buf = []
+        for i, cmd in enumerate(probes):
+            QTimer.singleShot(1000 + i * 2500,
+                              lambda c=cmd: self._type_command(c))
+        QTimer.singleShot(1000 + len(probes) * 2500 + 1500,
+                          self._parse_detect)
+
+    def _parse_detect(self):
+        import re as _re
+        out = self.term.last_output(120)
+        board = brand = model = ""
+        m = _re.search(r"\b(T\.[A-Z0-9]{4,}\.[A-Z0-9]{2,})\b", out)
+        if m:
+            board = m.group(1)
+        m = _re.search(r"\b(M7332|MSD6A\w+|MStar\w*|MT5\d{3}|"
+                       r"Amlogic|S9\d{3}\w*|RTD\d{4}|NT7\d{4})\b",
+                       out, _re.I)
+        if m:
+            board = (board + " " + m.group(1)).strip()
+        for line in out.splitlines():
+            low = line.lower()
+            if ("model" in low or "machine" in low) and \
+                    len(line.strip()) > 8:
+                val = line.split("=", 1)[-1].strip().strip("'\"")
+                val = val.split(":")[-1].strip() if "model name" not in low \
+                    else val
+                if 4 < len(val) < 60:
+                    model = val
+                    break
+        if model:
+            parts = model.split()
+            if len(parts) > 1:
+                brand = parts[0]
+        if board or model:
+            self.m_board.setText(board)
+            self.m_brand.setText(brand)
+            self.m_model.setText(model or board)
+            self.ai_output.appendPlainText(
+                "🔍 определил: плата=%s модель=%s — нажмите "
+                "«Запомнить модель»\n" % (board or "?", model or "?"))
+            if model and not any(m.get("model") == model
+                                 for m in self.models):
+                self._model_add()
+        else:
+            self.ai_output.appendPlainText(
+                "🔍 модель не распознана из вывода — заполните поля "
+                "вручную или нажмите «Полный анализ»\n")
+
+    def _download_config(self):
+        """Сохранить конфигурацию устройства в файл."""
+        if not (self.ssh and self.ssh.isRunning()):
+            QMessageBox.information(
+                self, "Конфиг", "Подключитесь к устройству и повторите.")
+            return
+        profile = self.profile_combo.currentData()
+        cmd = "printenv" if profile == "uboot" else \
+            "fw_printenv 2>/dev/null || cat /proc/cmdline"
+        self.ai_output.appendPlainText("💾 скачиваю конфиг…\n")
+        self._cfg_profile = profile
+        self._type_command(cmd)
+        QTimer.singleShot(4000, self._save_config)
+
+    def _save_config(self):
+        import re as _re
+        out = self.term.last_output(150)
+        model = self._current_model() or "unknown"
+        model = _re.sub(r"[^\w\-.]+", "_", model)
+        d = os.path.join(self._base_dir, "configs")
+        try:
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(
+                d, "%s_%s.conf" % (model,
+                                   _re.sub(r"[^\d]", "",
+                                           __import__("datetime")
+                                           .datetime.now()
+                                           .strftime("%m%d_%H%M"))))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(out)
+            self.ai_output.appendPlainText("💾 конфиг сохранён: %s\n" % path)
+        except OSError as ex:
+            self.ai_output.appendPlainText(
+                "[ошибка сохранения конфига: %s]\n" % ex)
+
     # ---------- Синхронизация базы знаний (все терминалы мастерской) ----------
     SYNC_FILES = ("skills.json", "learned_rules.json", "learned_cases.md",
                   "models.json")
@@ -2459,6 +2561,14 @@ class MainWindow(QMainWindow):
         l9.addRow("Модель ТВ:", self.m_model)
         l9.addRow(btn_madd)
         l9.addRow("Текущая:", self.m_list)
+        row_m = QHBoxLayout()
+        btn_det = QPushButton("🔍 Определить модель")
+        btn_det.clicked.connect(self._detect_model)
+        btn_cfg = QPushButton("💾 Скачать конфиг")
+        btn_cfg.clicked.connect(self._download_config)
+        row_m.addWidget(btn_det)
+        row_m.addWidget(btn_cfg)
+        l9.addRow(row_m)
         lay.addWidget(g9)
 
         dock = QDockWidget("ИИ-помощник")

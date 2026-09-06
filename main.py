@@ -154,12 +154,158 @@ def _heartbeat():
 threading.Thread(target=_heartbeat, daemon=True).start()
 
 
+def _fetch(url):
+    req = urllib.request.Request(
+        url, headers={"User-Agent":
+                      "Mozilla/5.0 (compatible; TerminalAI-learn/1.0)"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read(400_000)
+        enc = r.headers.get_content_charset() or "utf-8"
+        return raw.decode(enc, "replace")
+
+
+def _textify(html):
+    import re as _re
+    html = _re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html)
+    html = _re.sub(r"(?s)<[^>]+>", " ", html)
+    import html as _h
+    return _h.unescape(_re.sub(r"\s+", " ", html)).strip()
+
+
+def _harvest_links(html, base):
+    import re as _re
+    from urllib.parse import urljoin, urlparse
+    out = []
+    for href in _re.findall(r'href=["\']([^"\']+)["\']', html)[:60]:
+        u = urljoin(base, href)
+        if urlparse(u).netloc == urlparse(base).netloc \
+                and u not in LEARN_STATE["seen"]:
+            out.append(u)
+    return out
+
+
+def _ask_local(prompt, timeout=300):
+    up = LOCAL_UPSTREAM or ("http://127.0.0.1:%d/v1" % OLLAMA_PORT)
+    payload = {"model": OLLAMA_MODEL,
+               "messages": [
+                   {"role": "system", "content":
+                    "Ты — экстрактор знаний с форумов по ремонту "
+                    "электроники. Из текста вытащи 0-5 пар "
+                    "'ошибка/симптом -> решение/команды'. Ответь "
+                    "СТРОГО одним JSON-массивом: "
+                    '[{"trigger":"фрагмент ошибки","solution":["шаг1"],'
+                    '"note":"кратко"}]. Без пояснений и размышлений.'},
+                   {"role": "user", "content": prompt}],
+               "stream": False, "think": False}
+    req = urllib.request.Request(
+        up.rstrip("/") + "/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        rj = json.loads(r.read().decode("utf-8", "replace"))
+    return rj["choices"][0]["message"].get("content") or ""
+
+
+def _learn_merge(pairs, source_host):
+    """Добавить выученные навыки в skills.json (дедуп по 1-й строке)."""
+    if not isinstance(pairs, list):
+        return 0
+    skills = _read_json("skills.json", [])
+    known = {str(s.get("trigger", "")).splitlines()[0][:60]
+             for s in skills if s.get("trigger")}
+    n = 0
+    for p in pairs:
+        trig = str(p.get("trigger", "")).strip()
+        sol = [str(c).strip() for c in p.get("solution", []) if str(c).strip()]
+        if len(trig) < 8 or not sol:
+            continue
+        key = trig.splitlines()[0][:60]
+        if key in known:
+            continue
+        skills.append({"trigger": trig, "solution": sol,
+                       "note": str(p.get("note", ""))[:150] or key,
+                       "platform": "auto-learn", "source": source_host,
+                       "hits": 0})
+        known.add(key)
+        n += 1
+    if n:
+        with open(os.path.join(DATA, "skills.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(skills, f, ensure_ascii=False, indent=1)
+    return n
+
+
+def _learner():
+    """Учится на форумах, только когда ИИ свободен."""
+    import time as _t
+    from urllib.parse import urlparse
+    _t.sleep(360)
+    while True:
+        try:
+            if not LEARN or not _local_ready["ready"]:
+                _t.sleep(120)
+                continue
+            idle = (_t.time() - AI_ACT["last_ts"]) if AI_ACT["last_ts"] \
+                     else 9999
+            if AI_ACT["now"] > 0 or idle < 600:
+                _t.sleep(60)
+                continue
+            if not LEARN_STATE["queue"]:
+                for s in LEARN_SOURCES:
+                    try:
+                        h = _fetch(s)
+                        LEARN_STATE["queue"].extend(_harvest_links(h, s))
+                        _ev("📚 опросил %s, ссылок в очереди: %d"
+                            % (s, len(LEARN_STATE["queue"])))
+                    except Exception as ex:
+                        _ev("📚 не открыл %s: %s" % (s, ex))
+                if not LEARN_STATE["queue"]:
+                    _t.sleep(3600)
+                    continue
+            url = LEARN_STATE["queue"].pop(0)
+            if url in LEARN_STATE["seen"]:
+                continue
+            LEARN_STATE["seen"].add(url)
+            host = urlparse(url).netloc
+            html = _fetch(url)
+            text = _textify(html)
+            if len(text) < 600:
+                continue
+            _ev("📚 учусь: %s" % url)
+            raw = _ask_local(text[:6000])
+            import re as _re
+            m = _re.search(r"\[.*\]", raw, _re.S)
+            pairs = json.loads(m.group(0)) if m else []
+            added = _learn_merge(pairs, host)
+            LEARN_STATE["done"] += 1
+            LEARN_STATE["last"] = url
+            _ev("📚 выучил +%d навыков с %s" % (added, host))
+            _t.sleep(20)
+        except Exception as ex:
+            _ev("📚 ошибка обучения: %s" % str(ex)[:120])
+            _t.sleep(300)
+        _t.sleep(1500)
+
+
+if LEARN:
+    threading.Thread(target=_learner, daemon=True).start()
+
+
 def _read_text_or_none(fname):
     try:
         with open(os.path.join(DATA, fname), encoding="utf-8") as f:
             return f.read().strip()
     except Exception:
         return ""
+
+# --- самообучение в простое: форумы для чтения ---
+LEARN = os.environ.get("LEARN", "1") == "1"
+LEARN_SOURCES = [u.strip() for u in os.environ.get(
+    "LEARN_SOURCES",
+    "https://kenotrontv.ru/,https://mslw.com/bb/,"
+    "https://remont-aud.net/,http://televid-sib.org/,"
+    "https://4pda.to/forum/index.php?act=idx").split(",") if u.strip()]
+LEARN_STATE = {"queue": [], "seen": set(), "done": 0, "last": None}
 
 # Никакой ИИ не настроен? -> по умолчанию маленькая локальная модель
 # (можно отключить, задав любой из: AI_API_KEY / LOCAL_UPSTREAM / LLAMAFILE_URL)
@@ -873,6 +1019,9 @@ def api_stats():
         "ai_activity": dict(AI_ACT),
         "ai_log": _ai_log_summary(),
         "ai_load": _load_summary(),
+        "learn": {"done": LEARN_STATE["done"],
+                  "queue": len(LEARN_STATE["queue"]),
+                  "last": LEARN_STATE["last"]},
         "active_model": (OLLAMA_MODEL or ("gpt-oss (Groq)" if (AI_API_KEY or _read_text_or_none("ai_key.txt")) else None)),
         "daily": {d: HIST[d] for d in sorted(HIST)[-14:]},
     }

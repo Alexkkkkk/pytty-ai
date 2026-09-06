@@ -89,7 +89,8 @@ def _ev(msg):
 async def _log_middleware(request, call_next):
     t0 = _time.monotonic()
     response = await call_next(request)
-    if request.url.path not in ("/api/events", "/api/stats"):
+    if request.url.path not in ("/api/events", "/api/stats",
+                            "/favicon.ico", "/favicon.svg"):
         _ev("%s %s -> %s (%dms)" % (request.method, request.url.path,
                                     response.status_code,
                                     int((_time.monotonic() - t0) * 1000)))
@@ -1211,6 +1212,20 @@ tick();
 @app.get("/loge")
 def log_page():
     return HTMLResponse(LOG_PAGE)
+
+
+@app.get("/favicon.ico")
+def favicon():
+    svg = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+           "<rect width='64' height='64' rx='12' fill='#0d1117'/>"
+           "<text x='8' y='46' font-size='36' fill='#7ee787' "
+           "font-family='monospace'>&gt;_</text></svg>")
+    return HTMLResponse(svg, media_type="image/svg+xml")
+
+
+@app.get("/favicon.svg")
+def favicon_svg():
+    return favicon()
 
 
 if __name__ == "__main__":

@@ -540,7 +540,7 @@ async function load(){
     document.getElementById('uptime').textContent = 'uptime ' + (h? h+'ч ':'') + m + 'м';
     const tb = document.getElementById('skills'); tb.innerHTML = '';
     (d.skills_data||[]).slice().reverse().forEach(s=>{
-      const trg = (s.trigger||'').split('\n')[0];
+      const trg = (s.trigger||'').split('\\n')[0];
       const sol = (s.solution||[]).join('; ');
       tb.innerHTML += '<tr><td>'+escapeHtml(trg)+'</td><td class="small">'+escapeHtml(sol)+'</td><td>'+(s.hits||0)+'</td><td>'+(s.dangerous?'<span class="badge b-red">опасно</span>':'')+'</td></tr>';
     });

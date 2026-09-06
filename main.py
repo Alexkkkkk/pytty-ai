@@ -849,13 +849,28 @@ def dashboard():
     return HTMLResponse(DASH_HTML)
 
 
+def _mem_mb():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return None
+
+
 @app.get("/api/events")
 def api_events():
     idle_s = None
     if AI_ACT["last_ts"]:
         idle_s = int(_time.time() - AI_ACT["last_ts"])
     return {"events": EVENTS[-250:], "n": len(EVENTS),
-            "idle_s": idle_s, "ready": _local_ready["ready"]}
+            "idle_s": idle_s, "ready": _local_ready["ready"],
+            "now": _time.strftime("%H:%M:%S"),
+            "model": OLLAMA_MODEL or (LLAMAFILE_URL and "llamafile") or "Groq/облако",
+            "mem_mb": _mem_mb(),
+            "ai_now": AI_ACT["now"], "ai_total": AI_ACT["total"]}
 
 
 LOG_PAGE = """<!DOCTYPE html>
@@ -876,6 +891,7 @@ a{color:#58a6ff;text-decoration:none;margin-left:auto}
 <header><span class="dot"></span><b>Живой лог сервера</b>
 <button id="pause" onclick="togglePause()">⏸ пауза</button>
 <button onclick="document.getElementById('log').innerHTML=''">🧹 очистить</button>
+<button id="sec" onclick="toggleSec()">⏱ каждую секунду: ВЫКЛ</button>
 <span id="idle" class="t"></span>
 <a href="/">← дашборд</a></header>
 <div id="log"></div>
@@ -910,6 +926,33 @@ async function tick(){
   }catch(e){}
 }
 function togglePause(){ paused = !paused; document.getElementById('pause').textContent = paused ? '▶ продолжить' : '⏸ пауза'; }
+
+let secOn = false, secTimer = null, lastSec = '';
+async function secTick(){
+  try{
+    const r = await fetch('/api/events'); const d = await r.json();
+    let state;
+    if(d.ai_now > 0) state = '⚡ ОТВЕЧАЕТ (одновременно: ' + d.ai_now + ')';
+    else if(d.idle_s == null) state = '💤 обращений ещё не было';
+    else state = '💤 простой ' + Math.floor(d.idle_s/60) + ' мин ' + (d.idle_s%60) + ' с';
+    const line = d.now + ' ' + state + ' · модель: ' + d.model
+      + (d.ready ? ' (загружена)' : ' (не готова)')
+      + (d.mem_mb ? ' · RAM свободно: ' + d.mem_mb + ' МБ' : '')
+      + ' · запросов: ' + d.ai_total;
+    if(line === lastSec) return;
+    lastSec = line;
+    const div = document.createElement('div');
+    div.innerHTML = '<span class="t">' + d.now + '</span> <span class="get">' + esc(line.slice(9)) + '</span>';
+    document.getElementById('log').appendChild(div);
+    if(!paused) window.scrollTo(0, document.body.scrollHeight);
+  }catch(e){}
+}
+function toggleSec(){
+  secOn = !secOn;
+  document.getElementById('sec').textContent = '⏱ каждую секунду: ' + (secOn ? 'ВКЛ' : 'ВЫКЛ');
+  if(secOn){ secTick(); secTimer = setInterval(secTick, 1000); }
+  else { clearInterval(secTimer); }
+}
 setInterval(tick, 2000);
 tick();
 </script></body></html>"""

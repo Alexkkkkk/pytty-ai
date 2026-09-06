@@ -64,6 +64,35 @@ _local_ready = {"ready": False}
 MODEL_STATUS = {"stage": "не настроена", "pct": None}
 AI_ACT = {"now": 0, "total": 0, "last": None}
 AI_LOG = []   # журнал запросов: [{t, q, m}]
+AI_LOAD = {}  # нагрузка по минутам: {"HH:MM": {n, ms_sum, ms_max}}
+
+
+def _load_add(ms):
+    b = _time.strftime("%H:%M")
+    e = AI_LOAD.setdefault(b, {"n": 0, "ms_sum": 0.0, "ms_max": 0.0})
+    e["n"] += 1
+    e["ms_sum"] += ms
+    if ms > e["ms_max"]:
+        e["ms_max"] = ms
+    if len(AI_LOAD) > 180:
+        for k in sorted(AI_LOAD)[:-120]:
+            del AI_LOAD[k]
+
+
+def _load_summary():
+    keys = sorted(AI_LOAD)[-60:]
+    out = {}
+    tot_n = 0
+    tot_ms = 0.0
+    for k in keys:
+        e = AI_LOAD[k]
+        out[k] = {"n": e["n"], "avg_ms": int(e["ms_sum"] / e["n"]),
+                  "max_ms": int(e["ms_max"])}
+        tot_n += e["n"]
+        tot_ms += e["ms_sum"]
+    return {"buckets": out,
+            "avg_ms": int(tot_ms / tot_n) if tot_n else 0,
+            "total": tot_n}
 
 
 def _ai_log_add(q, model):
@@ -408,6 +437,7 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
     AI_ACT["total"] += 1
     AI_ACT["last"] = _time.strftime("%H:%M:%S")
     _bump_daily("ai")
+    _t0 = _time.monotonic()
     try:
         raw = await request.body()
         try:
@@ -420,6 +450,7 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
         return _relay("chat/completions", raw)
     finally:
         AI_ACT["now"] -= 1
+        _load_add((_time.monotonic() - _t0) * 1000.0)
 
 
 @app.post("/v1/embeddings")
@@ -539,6 +570,9 @@ a{color:#58a6ff}
 <div class="bars" id="chart"></div>
 <h3 style="color:#9fd0ff">Активность ИИ (запросов в день)</h3>
 <div class="bars" id="ai-chart"></div>
+<h3 style="color:#9fd0ff">Нагрузка на ИИ (последний час)</h3>
+<div class="bars" id="load-chart"></div>
+<div class="small" id="load-info" style="margin:-12px 0 22px"></div>
 <h3 style="color:#9fd0ff">ИИ сегодня по часам</h3>
 <div class="bars" id="hour-chart"></div>
 <h3 style="color:#9fd0ff">Журнал ИИ (live)</h3>
@@ -625,6 +659,21 @@ async function load(){
         + '<div class="d">' + k.slice(5) + '</div></div>';
     });
     if(!ach.innerHTML) ach.innerHTML = '<div class="small" style="padding:20px">запросов к ИИ пока не было — задайте вопрос в чате ниже</div>';
+    const lc = document.getElementById('load-chart'); lc.innerHTML = '';
+    const lb = d.ai_load ? d.ai_load.buckets : {};
+    const lkeys = Object.keys(lb);
+    const lmax = Math.max(1, ...lkeys.map(k => lb[k].n));
+    lkeys.forEach(k => {
+      const v = lb[k];
+      const slow = v.avg_ms > 3000;
+      lc.innerHTML += '<div class="bar"><div class="n">' + v.n + '</div>'
+        + '<div class="' + (slow ? 'ai' : 'put') + '" style="height:' + Math.round(100 * v.n / lmax) + '%"></div>'
+        + '<div class="d">' + k + '</div></div>';
+    });
+    if(!lc.innerHTML) lc.innerHTML = '<div class="small" style="padding:20px">запросов не было — нагрузка нулевая</div>';
+    document.getElementById('load-info').textContent = lkeys.length
+      ? 'всего за час: ' + d.ai_load.total + ' · средний ответ: ' + d.ai_load.avg_ms + ' мс'
+      : '';
     const hc = document.getElementById('hour-chart'); hc.innerHTML = '';
     const hours = d.ai_log ? d.ai_log.by_hour : {};
     const hmax = Math.max(1, ...Object.values(hours));
@@ -725,6 +774,7 @@ def api_stats():
         "model_status": dict(MODEL_STATUS),
         "ai_activity": dict(AI_ACT),
         "ai_log": _ai_log_summary(),
+        "ai_load": _load_summary(),
         "daily": {d: HIST[d] for d in sorted(HIST)[-14:]},
     }
 

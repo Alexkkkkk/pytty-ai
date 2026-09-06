@@ -100,7 +100,7 @@ HIST = _read_json(HIST_PATH, {}) if False else None  # заглушка до о�
 def _bump_daily(key):
     """+1 к сегодняшнему счётчику и сохранение истории."""
     day = _time.strftime("%Y-%m-%d")
-    HIST.setdefault(day, {"puts": 0, "gets": 0})
+    HIST.setdefault(day, {"puts": 0, "gets": 0, "ai": 0})
     HIST[day][key] = HIST[day].get(key, 0) + 1
     try:
         with open(HIST_PATH, "w", encoding="utf-8") as f:
@@ -391,6 +391,7 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
     AI_ACT["now"] += 1
     AI_ACT["total"] += 1
     AI_ACT["last"] = _time.strftime("%H:%M:%S")
+    _bump_daily("ai")
     try:
         return _relay("chat/completions", await request.body())
     finally:
@@ -402,6 +403,7 @@ async def relay_emb(request: Request, x_token: Optional[str] = Header(None)):
     _check_token(x_token)
     AI_ACT["now"] += 1
     AI_ACT["total"] += 1
+    _bump_daily("ai")
     try:
         return _relay("embeddings", await request.body())
     finally:
@@ -468,7 +470,7 @@ tr:hover td{background:#1c2128}
 .bars{display:flex;gap:6px;align-items:flex-end;height:120px;padding:14px;background:#161b22;border:1px solid #30363d;border-radius:10px;margin-bottom:22px}
 .bar{flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:3px}
 .bar .put,.bar .get{width:100%;border-radius:3px 3px 0 0;min-height:2px}
-.bar .put{background:#7ee787}.bar .get{background:#1f6feb}
+.bar .put{background:#7ee787}.bar .get{background:#1f6feb}.bar .ai{background:#bc8cff;height:100%;border-radius:3px 3px 0 0;min-height:2px}
 .bar .d{font-size:10px;color:#8b949e;text-align:center}
 .bar .n{font-size:10px;color:#c9d1d9;text-align:center}
 a{color:#58a6ff}
@@ -510,6 +512,8 @@ a{color:#58a6ff}
 <tbody id="skills"></tbody></table>
 <h3 style="color:#9fd0ff">Активность мастерской (14 дней)</h3>
 <div class="bars" id="chart"></div>
+<h3 style="color:#9fd0ff">Активность ИИ (запросов в день)</h3>
+<div class="bars" id="ai-chart"></div>
 <h3 style="color:#9fd0ff">Правила безопасности</h3>
 <table><thead><tr><th style="width:110px">Уровень</th><th>Паттерн</th></tr></thead>
 <tbody id="rules"></tbody></table>
@@ -582,6 +586,15 @@ async function load(){
         + '<div class="d">'+k.slice(5)+'</div></div>';
     });
     if(!ch.innerHTML) ch.innerHTML = '<div class="small" style="padding:20px">пока нет активности</div>';
+    const ach = document.getElementById('ai-chart'); ach.innerHTML = '';
+    const amax = Math.max(1, ...days.map(k => (d.daily[k].ai||0)));
+    days.forEach(k => {
+      const v = d.daily[k].ai || 0;
+      ach.innerHTML += '<div class="bar"><div class="n">' + v + '</div>'
+        + '<div class="ai" style="height:' + Math.round(100 * v / amax) + '%"></div>'
+        + '<div class="d">' + k.slice(5) + '</div></div>';
+    });
+    if(!ach.innerHTML) ach.innerHTML = '<div class="small" style="padding:20px">запросов к ИИ пока не было — задайте вопрос в чате ниже</div>';
     if(!tb.innerHTML) tb.innerHTML = '<tr><td colspan="4" class="small">база пуста — отправьте навыки из программы кнопкой «На сервер»</td></tr>';
     const rb = document.getElementById('rules'); rb.innerHTML = '';
     (d.rules.dangerous||[]).forEach(p=>{ rb.innerHTML += '<tr><td><span class="badge b-red">блок</span></td><td class="small">'+escapeHtml(p)+'</td></tr>'; });

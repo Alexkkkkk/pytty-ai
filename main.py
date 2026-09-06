@@ -61,11 +61,18 @@ LOCAL_UPSTREAM = os.environ.get("LOCAL_UPSTREAM", "")
 LOCAL_PORT = int(os.environ.get("LOCAL_PORT", "8081"))
 _local_proc = None
 _local_ready = {"ready": False}
+MODEL_STATUS = {"stage": "не настроена", "pct": None}
 
 # Никакой ИИ не настроен? -> по умолчанию маленькая локальная модель
 # (можно отключить, задав любой из: AI_API_KEY / LOCAL_UPSTREAM / LLAMAFILE_URL)
 if not (AI_API_KEY or LOCAL_UPSTREAM or LLAMAFILE_URL or OLLAMA_MODEL):
     OLLAMA_MODEL = "qwen2.5:0.5b"
+if AI_API_KEY or _read_text_or_none("ai_key.txt"):
+    MODEL_STATUS.update(stage="Groq/OpenAI (облако)", pct=100)
+elif OLLAMA_MODEL:
+    MODEL_STATUS.update(stage="подготовка Ollama…", pct=0)
+elif LLAMAFILE_URL:
+    MODEL_STATUS.update(stage="подготовка llamafile…", pct=0)
 
 FILES = {
     "skills": "skills.json",
@@ -108,6 +115,14 @@ def _read_text(fname):
     try:
         with open(os.path.join(DATA, fname), encoding="utf-8") as f:
             return f.read()
+    except Exception:
+        return ""
+
+
+def _read_text_or_none(fname):
+    try:
+        with open(os.path.join(DATA, fname), encoding="utf-8") as f:
+            return f.read().strip()
     except Exception:
         return ""
 
@@ -182,8 +197,18 @@ def _start_llamafile():
     try:
         if not os.path.exists(path) or os.path.getsize(path) < 10_000_000:
             tmp = path + ".part"
+            MODEL_STATUS.update(stage="скачивание llamafile…", pct=0)
             with urllib.request.urlopen(LLAMAFILE_URL, timeout=900) as r, open(tmp, "wb") as f:
-                shutil.copyfileobj(r, f, 1024 * 1024)
+                total = int(r.headers.get("Content-Length") or 0)
+                got = 0
+                while True:
+                    chunk = r.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    got += len(chunk)
+                    if total:
+                        MODEL_STATUS["pct"] = min(99, int(100 * got / total))
             os.replace(tmp, path)
         os.chmod(path, 0o755)
         log = open(os.path.join(DATA, "llamafile.log"), "ab")
@@ -211,11 +236,22 @@ def _start_ollama():
                 req = urllib.request.Request(
                     OLLAMA_TGZ,
                     headers={"User-Agent": "Mozilla/5.0"})
+                MODEL_STATUS.update(stage="скачивание Ollama (1.4 ГБ)…", pct=0)
                 with urllib.request.urlopen(req, timeout=1800) as r, \
                         open(tmp, "wb") as f:
-                    shutil.copyfileobj(r, f, 1024 * 1024)
+                    total = int(r.headers.get("Content-Length") or 0)
+                    got = 0
+                    while True:
+                        chunk = r.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        got += len(chunk)
+                        if total:
+                            MODEL_STATUS["pct"] = min(99, int(100 * got / total))
                 os.replace(tmp, arc)
             import tarfile
+            MODEL_STATUS.update(stage="распаковка Ollama…", pct=None)
             if arc.endswith(".zst"):
                 import zstandard
                 dctx = zstandard.ZstdDecompressor()
@@ -247,8 +283,21 @@ def _start_ollama():
                     break
             except Exception:
                 pass
-        subprocess.call([binary, "pull", OLLAMA_MODEL], env=env,
-                        stdout=log, stderr=subprocess.STDOUT)
+        MODEL_STATUS.update(stage="скачивание модели %s…" % OLLAMA_MODEL, pct=0)
+        import re as _re
+        proc = subprocess.Popen([binary, "pull", OLLAMA_MODEL], env=env,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout:
+            try:
+                log.write(line.encode("utf-8", "replace"))
+            except Exception:
+                pass
+            m = _re.search(r"(\d+(?:\.\d+)?)\s*%", line)
+            if m:
+                MODEL_STATUS["pct"] = min(99, int(float(m.group(1))))
+        proc.wait()
+        MODEL_STATUS.update(stage="запуск модели…", pct=99)
     except Exception as ex:
         print("ollama start failed:", ex)
 
@@ -275,7 +324,8 @@ def _relay_target():
 def local_model_status():
     ollama_url = ("http://127.0.0.1:%d/v1" % OLLAMA_PORT
                   if OLLAMA_MODEL else None)
-    return {"llamafile": {"url": LLAMAFILE_URL or None,
+    return {"status": dict(MODEL_STATUS),
+            "llamafile": {"url": LLAMAFILE_URL or None,
                           "running": bool(_local_proc and _local_proc.poll() is None),
                           "ready": _local_ready["ready"],
                           "port": LOCAL_PORT if LLAMAFILE_URL else None},
@@ -304,8 +354,10 @@ def _local_watcher():
                         body = json.loads(r.read().decode() or "{}")
                         if body.get("models"):
                             _local_ready["ready"] = True
+                            MODEL_STATUS.update(stage="работает", pct=100)
                     else:
                         _local_ready["ready"] = True
+                        MODEL_STATUS.update(stage="работает", pct=100)
             except Exception:
                 pass
 
@@ -409,6 +461,9 @@ tr:hover td{background:#1c2128}
 .bar .n{font-size:10px;color:#c9d1d9;text-align:center}
 a{color:#58a6ff}
 #refresh{float:right}
+#ai-status{display:flex;align-items:center;gap:10px;padding:10px 26px;background:#12261a;border-bottom:1px solid #238636;font-size:13px}
+#ai-status .bar{flex:1;max-width:320px;height:8px;background:#21262d;border-radius:5px;overflow:hidden}
+#ai-status .bar i{display:block;height:100%;background:linear-gradient(90deg,#238636,#7ee787);transition:width .5s}
 .chat{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px;margin-bottom:22px}
 #chat-log{max-height:340px;overflow-y:auto;margin-bottom:12px}
 .msg{padding:8px 12px;border-radius:10px;margin:6px 0;max-width:85%;white-space:pre-wrap;font-size:13px;line-height:1.45}
@@ -424,6 +479,7 @@ a{color:#58a6ff}
 </style></head><body>
 <header><span class="dot"></span><h1>TerminalAI — сервер мастерской</h1>
 <span class="small" id="uptime"></span><span class="small" id="lmodel" style="margin-left:auto"></span></header>
+<div id="ai-status"><span id="ai-stage">ИИ: проверка…</span><span class="bar"><i id="ai-pct" style="width:0%"></i></span><span id="ai-num"></span></div>
 <div class="wrap">
 <div class="cards">
 <div class="card"><div class="v" id="c-skills">—</div><div class="l">навыков в базе</div></div>
@@ -476,6 +532,13 @@ async function load(){
       const sol = (s.solution||[]).join('; ');
       tb.innerHTML += '<tr><td>'+escapeHtml(trg)+'</td><td class="small">'+escapeHtml(sol)+'</td><td>'+(s.hits||0)+'</td><td>'+(s.dangerous?'<span class="badge b-red">опасно</span>':'')+'</td></tr>';
     });
+    if(d.model_status){
+      const ms = d.model_status;
+      document.getElementById('ai-stage').textContent = '🧠 ' + ms.stage;
+      const p = (ms.pct == null) ? null : ms.pct;
+      document.getElementById('ai-pct').style.width = (p == null ? 100 : p) + '%';
+      document.getElementById('ai-num').textContent = (p == null) ? '' : p + '%';
+    }
     if(d.local_model){
       const lm = d.local_model;
       document.getElementById('lmodel').textContent = lm.ready
@@ -582,6 +645,7 @@ def api_stats():
         "rules": rules,
         "level": _learning_level(skills, cases.count("## Удачный случай")),
         "local_model": local_model_status(),
+        "model_status": dict(MODEL_STATUS),
         "daily": {d: HIST[d] for d in sorted(HIST)[-14:]},
     }
 

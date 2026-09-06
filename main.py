@@ -1019,6 +1019,7 @@ async function secTick(){
   }catch(e){}
 }
 let detOn = true, aiSeen = 0;
+document.getElementById('det').textContent = '🔬 супер-лог ИИ: ВКЛ';
 function renderDet(entries){
   const log = document.getElementById('log');
   for(let i = aiSeen; i < entries.length; i++){

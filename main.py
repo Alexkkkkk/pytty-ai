@@ -64,6 +64,14 @@ _local_ready = {"ready": False}
 MODEL_STATUS = {"stage": "не настроена", "pct": None}
 AI_ACT = {"now": 0, "total": 0, "last": None}
 
+
+def _read_text_or_none(fname):
+    try:
+        with open(os.path.join(DATA, fname), encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
 # Никакой ИИ не настроен? -> по умолчанию маленькая локальная модель
 # (можно отключить, задав любой из: AI_API_KEY / LOCAL_UPSTREAM / LLAMAFILE_URL)
 if not (AI_API_KEY or LOCAL_UPSTREAM or LLAMAFILE_URL or OLLAMA_MODEL):
@@ -116,14 +124,6 @@ def _read_text(fname):
     try:
         with open(os.path.join(DATA, fname), encoding="utf-8") as f:
             return f.read()
-    except Exception:
-        return ""
-
-
-def _read_text_or_none(fname):
-    try:
-        with open(os.path.join(DATA, fname), encoding="utf-8") as f:
-            return f.read().strip()
     except Exception:
         return ""
 

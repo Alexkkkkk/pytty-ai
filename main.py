@@ -63,6 +63,22 @@ _local_proc = None
 _local_ready = {"ready": False}
 MODEL_STATUS = {"stage": "не настроена", "pct": None}
 AI_ACT = {"now": 0, "total": 0, "last": None}
+AI_LOG = []   # журнал запросов: [{t, q, m}]
+
+
+def _ai_log_add(q, model):
+    AI_LOG.append({"t": _time.strftime("%H:%M"), "q": q[:80], "m": (model or "")[:40]})
+    if len(AI_LOG) > 500:
+        del AI_LOG[:-500]
+
+
+def _ai_log_summary():
+    today = _time.strftime("%Y-%m-%d")
+    by_hour = {}
+    for e in AI_LOG:
+        by_hour[e["t"][:2]] = by_hour.get(e["t"][:2], 0) + 1
+    return {"by_hour": by_hour,
+            "recent": list(reversed(AI_LOG[-30:]))}
 
 
 def _read_text_or_none(fname):
@@ -393,7 +409,15 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
     AI_ACT["last"] = _time.strftime("%H:%M:%S")
     _bump_daily("ai")
     try:
-        return _relay("chat/completions", await request.body())
+        raw = await request.body()
+        try:
+            _bj = json.loads(raw.decode("utf-8", "replace"))
+            _q = next((m.get("content", "") for m in _bj.get("messages", [])
+                       if m.get("role") == "user"), "")
+            _ai_log_add(_q or "(пустой запрос)", _bj.get("model"))
+        except Exception:
+            _ai_log_add("(запрос)", None)
+        return _relay("chat/completions", raw)
     finally:
         AI_ACT["now"] -= 1
 
@@ -404,6 +428,7 @@ async def relay_emb(request: Request, x_token: Optional[str] = Header(None)):
     AI_ACT["now"] += 1
     AI_ACT["total"] += 1
     _bump_daily("ai")
+    _ai_log_add("(эмбеддинги)", None)
     try:
         return _relay("embeddings", await request.body())
     finally:
@@ -514,6 +539,11 @@ a{color:#58a6ff}
 <div class="bars" id="chart"></div>
 <h3 style="color:#9fd0ff">Активность ИИ (запросов в день)</h3>
 <div class="bars" id="ai-chart"></div>
+<h3 style="color:#9fd0ff">ИИ сегодня по часам</h3>
+<div class="bars" id="hour-chart"></div>
+<h3 style="color:#9fd0ff">Журнал ИИ (live)</h3>
+<table><thead><tr><th style="width:60px">Время</th><th>Запрос</th></tr></thead>
+<tbody id="ailog"></tbody></table>
 <h3 style="color:#9fd0ff">Правила безопасности</h3>
 <table><thead><tr><th style="width:110px">Уровень</th><th>Паттерн</th></tr></thead>
 <tbody id="rules"></tbody></table>
@@ -595,6 +625,20 @@ async function load(){
         + '<div class="d">' + k.slice(5) + '</div></div>';
     });
     if(!ach.innerHTML) ach.innerHTML = '<div class="small" style="padding:20px">запросов к ИИ пока не было — задайте вопрос в чате ниже</div>';
+    const hc = document.getElementById('hour-chart'); hc.innerHTML = '';
+    const hours = d.ai_log ? d.ai_log.by_hour : {};
+    const hmax = Math.max(1, ...Object.values(hours));
+    for(let h = 0; h < 24; h += 2){
+      const v = hours[String(h).padStart(2,'0')] || 0;
+      hc.innerHTML += '<div class="bar"><div class="n">' + v + '</div>'
+        + '<div class="ai" style="height:' + Math.round(100 * v / hmax) + '%"></div>'
+        + '<div class="d">' + String(h).padStart(2,'0') + '</div></div>';
+    }
+    const lg = document.getElementById('ailog'); lg.innerHTML = '';
+    (d.ai_log ? d.ai_log.recent : []).forEach(e => {
+      lg.innerHTML += '<tr><td class="small">' + escapeHtml(e.t) + '</td><td>' + escapeHtml(e.q) + '</td></tr>';
+    });
+    if(!lg.innerHTML) lg.innerHTML = '<tr><td colspan="2" class="small">журнал пуст</td></tr>';
     if(!tb.innerHTML) tb.innerHTML = '<tr><td colspan="4" class="small">база пуста — отправьте навыки из программы кнопкой «На сервер»</td></tr>';
     const rb = document.getElementById('rules'); rb.innerHTML = '';
     (d.rules.dangerous||[]).forEach(p=>{ rb.innerHTML += '<tr><td><span class="badge b-red">блок</span></td><td class="small">'+escapeHtml(p)+'</td></tr>'; });
@@ -680,6 +724,7 @@ def api_stats():
         "local_model": local_model_status(),
         "model_status": dict(MODEL_STATUS),
         "ai_activity": dict(AI_ACT),
+        "ai_log": _ai_log_summary(),
         "daily": {d: HIST[d] for d in sorted(HIST)[-14:]},
     }
 

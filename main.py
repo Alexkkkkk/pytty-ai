@@ -60,6 +60,11 @@ LOCAL_PORT = int(os.environ.get("LOCAL_PORT", "8081"))
 _local_proc = None
 _local_ready = {"ready": False}
 
+# Никакой ИИ не настроен? -> по умолчанию маленькая локальная модель
+# (можно отключить, задав любой из: AI_API_KEY / LOCAL_UPSTREAM / LLAMAFILE_URL)
+if not (AI_API_KEY or LOCAL_UPSTREAM or LLAMAFILE_URL or OLLAMA_MODEL):
+    OLLAMA_MODEL = "qwen2.5:0.5b"
+
 FILES = {
     "skills": "skills.json",
     "rules": "learned_rules.json",
@@ -246,11 +251,9 @@ def _relay_target():
     key = AI_API_KEY or _read_text("ai_key.txt").strip()
     if key:
         return AI_UPSTREAM, key
-    if LOCAL_UPSTREAM and not LLAMAFILE_URL:
-        return LOCAL_UPSTREAM, ""
     if LLAMAFILE_URL and _local_ready["ready"]:
         return "http://127.0.0.1:%d/v1" % LOCAL_PORT, ""
-    if LOCAL_UPSTREAM:
+    if LOCAL_UPSTREAM and (not OLLAMA_MODEL or _local_ready["ready"]):
         return LOCAL_UPSTREAM, ""
     return None, None
 
@@ -270,13 +273,25 @@ def local_model_status():
 
 
 def _local_watcher():
+    """Помечает ready: llamafile — по /health, ollama — когда модель в /api/tags."""
     import time as _t
+    checks = []
+    if LLAMAFILE_URL:
+        checks.append(("http://127.0.0.1:%d/health" % LOCAL_PORT, False))
+    if OLLAMA_MODEL:
+        checks.append(("http://127.0.0.1:%d/api/tags" % OLLAMA_PORT, True))
     while True:
         _t.sleep(5)
-        if _local_proc is not None and not _local_ready["ready"]:
+        if _local_ready["ready"] or not checks:
+            continue
+        for url, need_models in checks:
             try:
-                with urllib.request.urlopen("http://127.0.0.1:%d/health" % LOCAL_PORT, timeout=3) as r:
-                    if r.status == 200:
+                with urllib.request.urlopen(url, timeout=3) as r:
+                    if need_models:
+                        body = json.loads(r.read().decode() or "{}")
+                        if body.get("models"):
+                            _local_ready["ready"] = True
+                    else:
                         _local_ready["ready"] = True
             except Exception:
                 pass

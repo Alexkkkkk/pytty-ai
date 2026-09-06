@@ -341,6 +341,7 @@ FILES = {
     "skills": "skills.json",
     "rules": "learned_rules.json",
     "cases": "learned_cases.md",
+    "models": "models.json",   # реестр моделей ТВ
     "aikey": "ai_key.txt",   # ключ ИИ: запись по токену, чтение запрещено
 }
 
@@ -736,6 +737,7 @@ EMBEDDED = {
         "Сюда программа дописывает случаи по кнопке "
         "«Сохранить успешное решение в базу знаний».\n"
     ),
+    "models.json": "[]",
 }
 
 

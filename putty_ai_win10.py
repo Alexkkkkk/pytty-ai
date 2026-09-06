@@ -748,6 +748,7 @@ class MainWindow(QMainWindow):
         # --- самообучение: навыки, правила, самопереписываемый код ---
         self._seed_data_files()
         self.skills = _load_json(os.path.join(self._base_dir, "skills.json"), [])
+        self.models = _load_json(os.path.join(self._base_dir, "models.json"), [])
         self.extra_rules = _load_json(
             os.path.join(self._base_dir, "learned_rules.json"),
             {"dangerous": [], "risky": []})
@@ -1247,6 +1248,8 @@ class MainWindow(QMainWindow):
         data["hits"] = 0
         data.setdefault("platform", "uboot")
         data.setdefault("note", trig[:120])
+        if self._current_model():
+            data["model"] = self._current_model()
         # mem0-паттерн: похожий навык уже есть? → обновить, а не дублировать
         first_line = trig.splitlines()[0][:60] if trig else ""
         for old in self.skills:
@@ -1561,6 +1564,9 @@ class MainWindow(QMainWindow):
                     vec = s.get("vec")
                     if vec:
                         sc = _cosine(ov, vec)
+                        if s.get("model") and \
+                                s.get("model") == self._current_model():
+                            sc += 0.15   # бонус: навык от этой же модели
                         if sc > best_s:
                             best, best_s = s, sc
                 if best_s >= 0.72:
@@ -1697,8 +1703,36 @@ class MainWindow(QMainWindow):
             "⚒ Промпты настроены по журналу (prompt_tuning.md), "
             "вступает в силу сразу\n")
 
+    # ---------- Реестр моделей ТВ ----------
+    def _model_refresh(self):
+        self.m_list.clear()
+        self.m_list.addItem("— не выбрана —", "")
+        for m in self.models:
+            label = "%s %s (%s)" % (m.get("brand", ""), m.get("model", ""),
+                                    m.get("board", ""))
+            self.m_list.addItem(label.strip(), m.get("model", ""))
+
+    def _model_add(self):
+        board = self.m_board.text().strip()
+        brand = self.m_brand.text().strip()
+        model = self.m_model.text().strip()
+        if not model:
+            QMessageBox.warning(self, "Модели", "Укажите хотя бы модель ТВ.")
+            return
+        self.models.append({"board": board, "brand": brand,
+                            "model": model})
+        _save_json(os.path.join(self._base_dir, "models.json"), self.models)
+        self._model_refresh()
+        self.m_list.setCurrentIndex(self.m_list.count() - 1)
+        self.ai_output.appendPlainText(
+            "📺 запомнил модель: %s %s (%s)\n" % (brand, model, board))
+
+    def _current_model(self):
+        return self.m_list.currentData() or ""
+
     # ---------- Синхронизация базы знаний (все терминалы мастерской) ----------
-    SYNC_FILES = ("skills.json", "learned_rules.json", "learned_cases.md")
+    SYNC_FILES = ("skills.json", "learned_rules.json", "learned_cases.md",
+                  "models.json")
 
     def _startup_sync(self):
         if self.chk_sync_auto.isChecked():
@@ -2406,6 +2440,26 @@ class MainWindow(QMainWindow):
         l8.addRow(btn_srv_dl, btn_srv_ul)
         l8.addRow(self.sync_status)
         lay.addWidget(g8)
+
+        # -- реестр моделей ТВ --
+        g9 = QGroupBox("Реестр моделей (чей конфиг от какого ТВ)")
+        l9 = QFormLayout(g9)
+        self.m_board = QLineEdit()
+        self.m_board.setPlaceholderText("M7332 / MSD6A638 / T.HV320…")
+        self.m_brand = QLineEdit()
+        self.m_brand.setPlaceholderText("Xiaomi / TCL / DEXP…")
+        self.m_model = QLineEdit()
+        self.m_model.setPlaceholderText("Mi TV 4S / L32S6500…")
+        btn_madd = QPushButton("Запомнить модель")
+        btn_madd.clicked.connect(self._model_add)
+        self.m_list = QComboBox()
+        self._model_refresh()
+        l9.addRow("Плата/SoC:", self.m_board)
+        l9.addRow("Бренд:", self.m_brand)
+        l9.addRow("Модель ТВ:", self.m_model)
+        l9.addRow(btn_madd)
+        l9.addRow("Текущая:", self.m_list)
+        lay.addWidget(g9)
 
         dock = QDockWidget("ИИ-помощник")
         dock.setWidget(panel)

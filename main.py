@@ -492,6 +492,10 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
                        if m.get("role") == "user"), "")
             _ai_log_add(_q or "(пустой запрос)", _bj.get("model"))
             _ev("AI <<< %s" % (_q or "(пустой запрос)")[:120])
+            _up0, _key0 = _relay_target()
+            if not _key0 and OLLAMA_MODEL:
+                _bj["model"] = OLLAMA_MODEL   # локальный бэкенд: своя модель
+                raw = json.dumps(_bj).encode("utf-8")
         except Exception:
             _ai_log_add("(запрос)", None)
         resp = await run_in_threadpool(_relay, "chat/completions", raw)
@@ -703,6 +707,9 @@ async function load(){
       const sol = (s.solution||[]).join('; ');
       tb.innerHTML += '<tr><td>'+escapeHtml(trg)+'</td><td class="small">'+escapeHtml(sol)+'</td><td>'+(s.hits||0)+'</td><td>'+(s.dangerous?'<span class="badge b-red">опасно</span>':'')+'</td></tr>';
     });
+    if(d.active_model && !localStorage.getItem('srv_mdl')){
+      document.getElementById('chat-model').value = d.active_model;
+    }
     if(d.model_status){
       const ms = d.model_status;
       document.getElementById('ai-stage').textContent = '🧠 ' + ms.stage;
@@ -788,7 +795,7 @@ async function load(){
 function escapeHtml(t){ return String(t).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 const chatHist = [];
 document.getElementById('chat-token').value = localStorage.getItem('srv_tok') || '';
-document.getElementById('chat-model').value = localStorage.getItem('srv_mdl') || 'qwen2.5:0.5b';
+document.getElementById('chat-model').value = localStorage.getItem('srv_mdl') || 'qwen3:0.6b';
 document.getElementById('chat-in').addEventListener('keydown', e => { if(e.key === 'Enter') chatSend(); });
 
 function chatAdd(cls, text){
@@ -866,6 +873,7 @@ def api_stats():
         "ai_activity": dict(AI_ACT),
         "ai_log": _ai_log_summary(),
         "ai_load": _load_summary(),
+        "active_model": (OLLAMA_MODEL or ("gpt-oss (Groq)" if (AI_API_KEY or _read_text_or_none("ai_key.txt")) else None)),
         "daily": {d: HIST[d] for d in sorted(HIST)[-14:]},
     }
 

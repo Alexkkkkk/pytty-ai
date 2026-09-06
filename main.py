@@ -65,6 +65,24 @@ MODEL_STATUS = {"stage": "не настроена", "pct": None}
 AI_ACT = {"now": 0, "total": 0, "last": None}
 AI_LOG = []   # журнал запросов: [{t, q, m}]
 AI_LOAD = {}  # нагрузка по минутам: {"HH:MM": {n, ms_sum, ms_max}}
+EVENTS = []   # живой лог: [{t, m}]
+
+
+def _ev(msg):
+    EVENTS.append({"t": _time.strftime("%H:%M:%S"), "m": str(msg)[:200]})
+    if len(EVENTS) > 400:
+        del EVENTS[:-300]
+
+
+@app.middleware("http")
+async def _log_middleware(request, call_next):
+    t0 = _time.monotonic()
+    response = await call_next(request)
+    if request.url.path not in ("/api/events", "/api/stats"):
+        _ev("%s %s -> %s (%dms)" % (request.method, request.url.path,
+                                    response.status_code,
+                                    int((_time.monotonic() - t0) * 1000)))
+    return response
 
 
 def _load_add(ms):
@@ -230,6 +248,7 @@ async def put_sync(name: str, request: Request,
             raise HTTPException(status_code=400, detail="bad json")
     STATS["puts"] += 1
     _bump_daily("puts")
+    _ev("SYNC PUT %s (%d B)" % (name, len(body)))
     with open(_path(name), "wb") as f:
         f.write(body)
     return {"ok": True, "bytes": len(body)}
@@ -445,6 +464,7 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
             _q = next((m.get("content", "") for m in _bj.get("messages", [])
                        if m.get("role") == "user"), "")
             _ai_log_add(_q or "(пустой запрос)", _bj.get("model"))
+            _ev("AI <<< %s" % (_q or "(пустой запрос)")[:120])
         except Exception:
             _ai_log_add("(запрос)", None)
         return _relay("chat/completions", raw)
@@ -593,7 +613,7 @@ a{color:#58a6ff}
 <button id="chat-send" onclick="chatSend()">Отправить</button>
 </div>
 </div>
-<p class="small">Обновление каждые 15 секунд · API: <a href="/docs">/docs</a> · синхронизация: <code>/api/sync/*</code></p>
+<p class="small">Обновление каждые 15 секунд · API: <a href="/log">живой лог</a> · <a href="/docs">/docs</a> · синхронизация: <code>/api/sync/*</code></p>
 </div>
 <script>
 async function load(){
@@ -802,6 +822,69 @@ def _learning_level(skills, cases):
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return HTMLResponse(DASH_HTML)
+
+
+@app.get("/api/events")
+def api_events():
+    return {"events": EVENTS[-250:], "n": len(EVENTS)}
+
+
+LOG_PAGE = """<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TerminalAI — живой лог</title>
+<style>
+body{margin:0;background:#0d1117;color:#7ee787;font-family:Consolas,monospace;font-size:13px}
+header{padding:12px 20px;background:#161b22;border-bottom:1px solid #30363d;display:flex;gap:12px;align-items:center;position:sticky;top:0}
+header b{color:#d7dae0;font-family:'Segoe UI',Arial}
+button{background:#21262d;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:5px 12px;cursor:pointer}
+a{color:#58a6ff;text-decoration:none;margin-left:auto}
+#log{padding:14px 20px;white-space:pre-wrap;line-height:1.55}
+.t{color:#8b949e}.post{color:#79c0ff}.get{color:#7ee787}.err{color:#ff7b72}.ai{color:#bc8cff}
+.dot{width:8px;height:8px;border-radius:50%;background:#3fb950;display:inline-block;animation:bl 1.4s infinite}
+@keyframes bl{50%{opacity:.3}}
+</style></head><body>
+<header><span class="dot"></span><b>Живой лог сервера</b>
+<button id="pause" onclick="togglePause()">⏸ пауза</button>
+<button onclick="document.getElementById('log').innerHTML=''">🧹 очистить</button>
+<a href="/">← дашборд</a></header>
+<div id="log"></div>
+<script>
+let n = 0, paused = false;
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function cls(line){
+  if(line.indexOf(' -> 5') > -1 || line.indexOf(' -> 4') > -1) return 'err';
+  if(line.startsWith('AI <<<')) return 'ai';
+  if(line.startsWith('POST')) return 'post';
+  if(line.startsWith('GET')) return 'get';
+  return '';
+}
+async function tick(){
+  if(paused) return;
+  try{
+    const r = await fetch('/api/events'); const d = await r.json();
+    const evs = d.events || [];
+    const start = Math.max(0, evs.length - (d.n - n));
+    for(let i = start; i < evs.length; i++){
+      const e = evs[i];
+      const div = document.createElement('div');
+      div.innerHTML = '<span class="t">'+e.t+'</span> <span class="'+cls(e.m)+'">'+esc(e.m)+'</span>';
+      document.getElementById('log').appendChild(div);
+    }
+    n = d.n;
+    window.scrollTo(0, document.body.scrollHeight);
+  }catch(e){}
+}
+function togglePause(){ paused = !paused; document.getElementById('pause').textContent = paused ? '▶ продолжить' : '⏸ пауза'; }
+setInterval(tick, 2000);
+tick();
+</script></body></html>"""
+
+
+@app.get("/log")
+@app.get("/loge")
+def log_page():
+    return HTMLResponse(LOG_PAGE)
 
 
 if __name__ == "__main__":

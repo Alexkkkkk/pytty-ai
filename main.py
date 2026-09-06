@@ -197,15 +197,23 @@ def _harvest_links(html, base):
 def _ask_local(prompt, timeout=300):
     up = LOCAL_UPSTREAM or ("http://127.0.0.1:%d/v1" % OLLAMA_PORT)
     payload = {"model": OLLAMA_MODEL,
+               "temperature": 0.1,
                "messages": [
                    {"role": "system", "content":
                     "Ты — экстрактор знаний с форумов по ремонту "
-                    "электроники. Из текста вытащи 0-5 пар "
-                    "'ошибка/симптом -> решение/команды'. Ответь "
-                    "СТРОГО одним JSON-массивом: "
-                    '[{"trigger":"фрагмент ошибки","solution":["шаг1"],'
-                    '"note":"кратко"}]. Без пояснений и размышлений.'},
-                   {"role": "user", "content": prompt}],
+                    "электроники. Из ПРЕДЛОЖЕННОГО ТЕКСТА вытащи "
+                    "пары 'ошибка/симптом -> решение'. Ответь "
+                    "СТРОГО одним JSON-массивом, без пояснений, "
+                    "без размышлений, без кавычек-шаблонов. "
+                    "Пример правильного ответа для текста "
+                    "'у клиента телевизор висит на логотипе, "
+                    "помогла замена eMMC и прошивка с флешки': "
+                    '[{"trigger":"телевизор висит на логотипе",'
+                    '"solution":["заменить eMMC",'
+                    '"прошить с флешки"],"note":"висит на логотипе"}]'},
+                   {"role": "user", "content":
+                    "Текст:\n" + prompt +
+                    "\n\nОтветь JSON-массивом пар из этого текста."}],
                "stream": False, "think": False}
     req = urllib.request.Request(
         up.rstrip("/") + "/chat/completions",
@@ -228,6 +236,11 @@ def _learn_merge(pairs, source_host):
         trig = str(p.get("trigger", "")).strip()
         sol = [str(c).strip() for c in p.get("solution", []) if str(c).strip()]
         if len(trig) < 8 or not sol:
+            continue
+        tl = trig.lower()
+        if any(x in tl for x in ("фрагмент", "пример", "example",
+                                 "ошибка/симптом", "trigger",
+                                 "текст:", "unknown", "н/д")):
             continue
         key = trig.splitlines()[0][:60]
         if key in known:
@@ -273,6 +286,10 @@ def _learner():
                     _t.sleep(3600)
                     continue
             url = LEARN_STATE["queue"].pop(0)
+            low = url.lower()
+            if any(x in low for x in (".xml", ".rss", "/feed", "/rss",
+                                      "?rss", "atom", "sitemap")):
+                continue
             if url in LEARN_STATE["seen"]:
                 continue
             LEARN_STATE["seen"].add(url)

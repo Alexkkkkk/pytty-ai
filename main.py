@@ -62,6 +62,15 @@ LOCAL_UPSTREAM = os.environ.get("LOCAL_UPSTREAM", "")
 LOCAL_PORT = int(os.environ.get("LOCAL_PORT", "8081"))
 _local_proc = None
 _local_ready = {"ready": False}
+
+LEARN = os.environ.get("LEARN", "1") == "1"
+LEARN_SOURCES = [u.strip() for u in os.environ.get(
+    "LEARN_SOURCES",
+    "https://kenotrontv.ru/,https://mslw.com/bb/,"
+    "https://remont-aud.net/,http://televid-sib.org/,"
+    "https://4pda.to/forum/index.php?act=idx").split(",") if u.strip()]
+LEARN_STATE = {"queue": [], "seen": set(), "done": 0, "last": None}
+
 MODEL_STATUS = {"stage": "не настроена", "pct": None}
 AI_ACT = {"now": 0, "total": 0, "last": None, "last_ts": None}
 AI_LOG = []   # журнал запросов: [{t, q, m}]
@@ -299,14 +308,6 @@ def _read_text_or_none(fname):
         return ""
 
 # --- самообучение в простое: форумы для чтения ---
-LEARN = os.environ.get("LEARN", "1") == "1"
-LEARN_SOURCES = [u.strip() for u in os.environ.get(
-    "LEARN_SOURCES",
-    "https://kenotrontv.ru/,https://mslw.com/bb/,"
-    "https://remont-aud.net/,http://televid-sib.org/,"
-    "https://4pda.to/forum/index.php?act=idx").split(",") if u.strip()]
-LEARN_STATE = {"queue": [], "seen": set(), "done": 0, "last": None}
-
 # Никакой ИИ не настроен? -> по умолчанию маленькая локальная модель
 # (можно отключить, задав любой из: AI_API_KEY / LOCAL_UPSTREAM / LLAMAFILE_URL)
 if not (AI_API_KEY or LOCAL_UPSTREAM or LLAMAFILE_URL or OLLAMA_MODEL):

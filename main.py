@@ -53,8 +53,10 @@ LLAMAFILE_URL = os.environ.get("LLAMAFILE_URL", "")
 # (например qwen2.5:0.5b). Работает, только если LOCAL_UPSTREAM не задан.
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "")
 OLLAMA_PORT = int(os.environ.get("OLLAMA_PORT", "11435"))
-OLLAMA_TGZ = os.environ.get("OLLAMA_TGZ",
-    "https://ollama.com/download/ollama-linux-amd64.tgz")
+OLLAMA_TGZ = os.environ.get(
+    "OLLAMA_TGZ",
+    "https://github.com/ollama/ollama/releases/latest/"
+    "download/ollama-linux-amd64.tar.zst")
 LOCAL_UPSTREAM = os.environ.get("LOCAL_UPSTREAM", "")
 LOCAL_PORT = int(os.environ.get("LOCAL_PORT", "8081"))
 _local_proc = None
@@ -203,16 +205,27 @@ def _start_ollama():
     try:
         os.makedirs(base, exist_ok=True)
         if not os.path.exists(binary):
-            tgz = os.path.join(base, "ollama.tgz")
-            if not os.path.exists(tgz) or os.path.getsize(tgz) < 1_000_000:
-                tmp = tgz + ".part"
-                with urllib.request.urlopen(OLLAMA_TGZ, timeout=1200) as r, \
+            arc = os.path.join(base, "ollama.tar.zst")
+            if not os.path.exists(arc) or os.path.getsize(arc) < 10_000_000:
+                tmp = arc + ".part"
+                req = urllib.request.Request(
+                    OLLAMA_TGZ,
+                    headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=1800) as r, \
                         open(tmp, "wb") as f:
                     shutil.copyfileobj(r, f, 1024 * 1024)
-                os.replace(tmp, tgz)
+                os.replace(tmp, arc)
             import tarfile
-            with tarfile.open(tgz) as tf:
-                tf.extractall(base)
+            if arc.endswith(".zst"):
+                import zstandard
+                dctx = zstandard.ZstdDecompressor()
+                with open(arc, "rb") as fh, \
+                        dctx.stream_reader(fh) as rdr, \
+                        tarfile.open(fileobj=rdr, mode="r|") as tf:
+                    tf.extractall(base)
+            else:
+                with tarfile.open(arc) as tf:
+                    tf.extractall(base)
             # бинарник лежит в ./ollama-linux-amd64/ или корне архива
             for root, _dirs, files in os.walk(base):
                 if "ollama" in files:

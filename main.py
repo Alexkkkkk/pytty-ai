@@ -33,6 +33,7 @@ import urllib.request
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 app = FastAPI(title="TerminalAI Sync Server", version="1.0.0")
@@ -466,7 +467,7 @@ def _relay(path: str, body: bytes):
         headers=({**{"Content-Type": "application/json"}, **({"Authorization": "Bearer " + key} if key else {})}),
     )
     try:
-        with urllib.request.urlopen(req, timeout=180) as r:
+        with urllib.request.urlopen(req, timeout=150) as r:
             return JSONResponse(json.loads(r.read().decode("utf-8")))
     except urllib.error.HTTPError as ex:
         raise HTTPException(status_code=ex.code, detail=ex.read().decode("utf-8", "replace")[:500])
@@ -493,7 +494,7 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
             _ev("AI <<< %s" % (_q or "(пустой запрос)")[:120])
         except Exception:
             _ai_log_add("(запрос)", None)
-        resp = _relay("chat/completions", raw)
+        resp = await run_in_threadpool(_relay, "chat/completions", raw)
         try:
             rj = json.loads(resp.body.decode("utf-8", "replace"))
             _msg = rj["choices"][0]["message"]
@@ -549,7 +550,8 @@ async def relay_emb(request: Request, x_token: Optional[str] = Header(None)):
     _bump_daily("ai")
     _ai_log_add("(эмбеддинги)", None)
     try:
-        return _relay("embeddings", await request.body())
+        return await run_in_threadpool(_relay, "embeddings",
+                                       await request.body())
     finally:
         AI_ACT["now"] -= 1
 

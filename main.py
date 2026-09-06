@@ -66,6 +66,7 @@ AI_ACT = {"now": 0, "total": 0, "last": None, "last_ts": None}
 AI_LOG = []   # журнал запросов: [{t, q, m}]
 AI_LOAD = {}  # нагрузка по минутам: {"HH:MM": {n, ms_sum, ms_max}}
 EVENTS = []   # живой лог: [{t, m}]
+AI_DET = []   # супер-лог ИИ: [{t, model, q, a, ms, ptok, ctok, err}]
 
 
 def _ev(msg):
@@ -492,7 +493,26 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
             _ev("AI <<< %s" % (_q or "(пустой запрос)")[:120])
         except Exception:
             _ai_log_add("(запрос)", None)
-        return _relay("chat/completions", raw)
+        resp = _relay("chat/completions", raw)
+        try:
+            rj = json.loads(resp.body.decode("utf-8", "replace"))
+            ans = rj["choices"][0]["message"]["content"]
+            usg = rj.get("usage") or {}
+            ms = int((_time.monotonic() - _t0) * 1000)
+            AI_DET.append({"t": _time.strftime("%H:%M:%S"),
+                           "model": _bj.get("model") if "_bj" in dir() else None,
+                           "q": (_q or "")[:400], "a": ans[:600], "ms": ms,
+                           "ptok": usg.get("prompt_tokens") or usg.get("prompt_eval_count"),
+                           "ctok": usg.get("completion_tokens") or usg.get("eval_count"),
+                           "err": None})
+            if len(AI_DET) > 200:
+                del AI_DET[:-150]
+            _ev("AI ответ: %dms, %s+%s ток"
+                % (ms, usg.get("prompt_tokens") or usg.get("prompt_eval_count") or "?",
+                   usg.get("completion_tokens") or usg.get("eval_count") or "?"))
+        except Exception:
+            pass
+        return resp
     finally:
         AI_ACT["now"] -= 1
         _load_add((_time.monotonic() - _t0) * 1000.0)
@@ -870,7 +890,8 @@ def api_events():
             "now": _time.strftime("%H:%M:%S"),
             "model": OLLAMA_MODEL or (LLAMAFILE_URL and "llamafile") or "Groq/облако",
             "mem_mb": _mem_mb(),
-            "ai_now": AI_ACT["now"], "ai_total": AI_ACT["total"]}
+            "ai_now": AI_ACT["now"], "ai_total": AI_ACT["total"],
+            "ai_det": AI_DET[-60:]}
 
 
 LOG_PAGE = """<!DOCTYPE html>
@@ -886,12 +907,17 @@ a{color:#58a6ff;text-decoration:none;margin-left:auto}
 #log{padding:14px 20px;white-space:pre-wrap;line-height:1.55}
 .t{color:#8b949e}.post{color:#79c0ff}.get{color:#7ee787}.err{color:#ff7b72}.ai{color:#bc8cff}
 .dot{width:8px;height:8px;border-radius:50%;background:#3fb950;display:inline-block;animation:bl 1.4s infinite}
+.det{border-left:2px solid #bc8cff;margin:4px 0 10px 6px;padding:4px 10px}
+.det .q{color:#79c0ff;white-space:pre-wrap}
+.det .a{color:#7ee787;white-space:pre-wrap;margin-top:4px}
+.det .m{color:#8b949e;font-size:11px;margin-top:4px}
 @keyframes bl{50%{opacity:.3}}
 </style></head><body>
 <header><span class="dot"></span><b>Живой лог сервера</b>
 <button id="pause" onclick="togglePause()">⏸ пауза</button>
 <button onclick="document.getElementById('log').innerHTML=''">🧹 очистить</button>
 <button id="sec" onclick="toggleSec()">⏱ каждую секунду: ВЫКЛ</button>
+<button id="det" onclick="toggleDet()">🔬 супер-лог ИИ: ВЫКЛ</button>
 <span id="idle" class="t"></span>
 <a href="/">← дашборд</a></header>
 <div id="log"></div>
@@ -919,6 +945,7 @@ async function tick(){
     }
     n = d.n;
     window.scrollTo(0, document.body.scrollHeight);
+    if(detOn && d.ai_det){ renderDet(d.ai_det); if(d.ai_det.length < aiSeen) aiSeen = 0; }
     const el = document.getElementById('idle');
     if(d.idle_s == null){ el.textContent = '💤 обращений к ИИ не было'; }
     else if(d.idle_s < 60){ el.textContent = '⚡ активен (запрос ' + d.idle_s + ' с назад)'; }
@@ -947,6 +974,26 @@ async function secTick(){
     if(!paused) window.scrollTo(0, document.body.scrollHeight);
   }catch(e){}
 }
+let detOn = true, aiSeen = 0;
+function renderDet(entries){
+  const log = document.getElementById('log');
+  for(let i = aiSeen; i < entries.length; i++){
+    const e = entries[i];
+    const div = document.createElement('div');
+    div.className = 'det';
+    div.innerHTML = '<div class="m">'+esc(e.t)+' · '+(e.model||'модель')+' · '+e.ms+' мс · токены '+(e.ptok||'?')+'+'+(e.ctok||'?')+'</div>'
+      + '<div class="q">В: '+esc(e.q)+'</div>'
+      + '<div class="a">О: '+esc(e.a)+'</div>';
+    log.appendChild(div);
+  }
+  aiSeen = entries.length;
+  if(!paused) window.scrollTo(0, document.body.scrollHeight);
+}
+function toggleDet(){
+  detOn = !detOn;
+  document.getElementById('det').textContent = '🔬 супер-лог ИИ: ' + (detOn ? 'ВКЛ' : 'ВЫКЛ');
+}
+
 function toggleSec(){
   secOn = !secOn;
   document.getElementById('sec').textContent = '⏱ каждую секунду: ' + (secOn ? 'ВКЛ' : 'ВЫКЛ');

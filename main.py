@@ -467,7 +467,7 @@ def _relay(path: str, body: bytes):
         headers=({**{"Content-Type": "application/json"}, **({"Authorization": "Bearer " + key} if key else {})}),
     )
     try:
-        with urllib.request.urlopen(req, timeout=150) as r:
+        with urllib.request.urlopen(req, timeout=300) as r:
             return JSONResponse(json.loads(r.read().decode("utf-8")))
     except urllib.error.HTTPError as ex:
         raise HTTPException(status_code=ex.code, detail=ex.read().decode("utf-8", "replace")[:500])
@@ -499,7 +499,8 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
             rj = json.loads(resp.body.decode("utf-8", "replace"))
             _msg = rj["choices"][0]["message"]
             ans = _msg.get("content") or ""
-            _think = _msg.get("reasoning_content") or ""
+            _think = (_msg.get("reasoning_content") or
+                      _msg.get("reasoning") or "")
             if not _think and "<think>" in ans:
                 _ts = ans.split("<think>", 1)
                 if len(_ts) > 1 and "</think>" in _ts[1]:

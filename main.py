@@ -1004,12 +1004,12 @@ async function secTick(){
       + (d.ready ? ' (загружена в RAM' + (d.mem_mb ? ', свободно ' + d.mem_mb + ' МБ' : '') + ')' : ' (не готова)')
       + ' · запросов: ' + d.ai_total;
     if(d.ai_now === 0 && d.last_think && d.last_think.think){
-      line += ' \n💤 последние мысли (' + d.last_think.t + '): «' + d.last_think.think.slice(0, 120) + '»';
+      line += ' \\n💤 последние мысли (' + d.last_think.t + '): «' + d.last_think.think.slice(0, 120) + '»';
     }
     if(line === lastSec) return;
     lastSec = line;
     const div = document.createElement('div');
-    const nl = line.indexOf('\n');
+    const nl = line.indexOf('\\n');
     const head = nl === -1 ? line : line.slice(0, nl);
     const tail = nl === -1 ? '' : line.slice(nl + 1);
     div.innerHTML = '<span class="t">' + d.now + '</span> <span class="get">' + esc(head.slice(9)) + '</span>'

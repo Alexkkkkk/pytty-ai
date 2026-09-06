@@ -62,6 +62,7 @@ LOCAL_PORT = int(os.environ.get("LOCAL_PORT", "8081"))
 _local_proc = None
 _local_ready = {"ready": False}
 MODEL_STATUS = {"stage": "не настроена", "pct": None}
+AI_ACT = {"now": 0, "total": 0, "last": None}
 
 # Никакой ИИ не настроен? -> по умолчанию маленькая локальная модель
 # (можно отключить, задав любой из: AI_API_KEY / LOCAL_UPSTREAM / LLAMAFILE_URL)
@@ -387,13 +388,24 @@ def _relay(path: str, body: bytes):
 @app.post("/v1/chat/completions")
 async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
     _check_token(x_token)
-    return _relay("chat/completions", await request.body())
+    AI_ACT["now"] += 1
+    AI_ACT["total"] += 1
+    AI_ACT["last"] = _time.strftime("%H:%M:%S")
+    try:
+        return _relay("chat/completions", await request.body())
+    finally:
+        AI_ACT["now"] -= 1
 
 
 @app.post("/v1/embeddings")
 async def relay_emb(request: Request, x_token: Optional[str] = Header(None)):
     _check_token(x_token)
-    return _relay("embeddings", await request.body())
+    AI_ACT["now"] += 1
+    AI_ACT["total"] += 1
+    try:
+        return _relay("embeddings", await request.body())
+    finally:
+        AI_ACT["now"] -= 1
 
 
 # ---------- запуск и начальное заполнение ----------
@@ -539,6 +551,14 @@ async function load(){
       document.getElementById('ai-pct').style.width = (p == null ? 100 : p) + '%';
       document.getElementById('ai-num').textContent = (p == null) ? '' : p + '%';
     }
+    const act = d.ai_activity || {now:0,total:0,last:null};
+    if(act.now > 0){
+      document.getElementById('ai-stage').textContent = '⚡ ИИ отвечает… (одновременно: ' + act.now + ')';
+      document.getElementById('ai-pct').style.width = '100%';
+      document.getElementById('ai-num').textContent = '';
+    } else if(d.model_status && d.model_status.pct === 100){
+      document.getElementById('ai-num').textContent = '· запросов: ' + act.total + (act.last ? ' · последний ' + act.last : '');
+    }
     if(d.local_model){
       const lm = d.local_model;
       document.getElementById('lmodel').textContent = lm.ready
@@ -646,6 +666,7 @@ def api_stats():
         "level": _learning_level(skills, cases.count("## Удачный случай")),
         "local_model": local_model_status(),
         "model_status": dict(MODEL_STATUS),
+        "ai_activity": dict(AI_ACT),
         "daily": {d: HIST[d] for d in sorted(HIST)[-14:]},
     }
 

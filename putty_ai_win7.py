@@ -41,6 +41,11 @@ try:
 except ImportError:
     bootprof = None
 
+try:
+    import auto_fixer as autofix
+except ImportError:
+    autofix = None
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
@@ -184,6 +189,8 @@ class Terminal(QPlainTextEdit):
         self.sendText.emit(rest)
 
     def keyPressEvent(self, e):
+        if autofix:
+            autofix.note_user()
         key = e.key()
         mods = e.modifiers()
 
@@ -824,6 +831,24 @@ class MainWindow(QMainWindow):
         self._last_hook_msg = ""
         self._load_user_patches()
 
+        # --- авто-чинильщик: поиск решений в режиме простоя ---
+        self._fixer_busy = False
+        self._fixer_worker = None
+        self._fixer = None
+        if autofix:
+            self._fixer = autofix.AutoFixerCore(
+                llm_call=self._fixer_llm,
+                send_cmd=self._fixer_send,
+                get_recent=self._fixer_recent,
+                is_connected=self._fixer_connected,
+                log=lambda m: self.ai_output.appendPlainText(m),
+                append_kb=self._fixer_append_kb,
+                ask_confirm=self._fixer_confirm)
+            self._fixer_timer = QTimer(self)
+            self._fixer_timer.setInterval(3000)
+            self._fixer_timer.timeout.connect(self._fixer_tick)
+            self._fixer_timer.start()
+
         # --- умное ожидание (expect), верификатор, рефлексия, лог сессии ---
         self._expecting = False
         self._expect_deadline = 0.0
@@ -967,21 +992,23 @@ class MainWindow(QMainWindow):
             "исправить. Если всё в порядке — скажи об этом одной фразой." + kb)
 
     def _cmd_prompt(self):
+        hint = bootprof.prompt_hint() if bootprof else ""
         if self.profile_combo.currentData() == "uboot":
-            return ("Ты — эксперт по U-Boot. Пользователь описывает задачу по "
+            return (hint + "Ты — эксперт по U-Boot. Пользователь описывает задачу по "
                     "прошивке/восстановлению устройства — верни ТОЛЬКО одну "
                     "команду U-Boot (или короткую последовательность через ; ) "
                     "без пояснений и без markdown.")
-        return ("Ты помощник в терминале Linux. Пользователь описывает "
+        return (hint + "Ты помощник в терминале Linux. Пользователь описывает "
                 "задачу — верни ТОЛЬКО одну команду bash без пояснений, "
                 "без markdown и без кавычек вокруг команды.")
 
     def _ac_prompt(self):
+        hint = bootprof.prompt_hint() if bootprof else ""
         if self.profile_combo.currentData() == "uboot":
-            return ("Дополни начало команды U-Boot. Ответь ТОЛЬКО продолжением "
+            return (hint + "Дополни начало команды U-Boot. Ответь ТОЛЬКО продолжением "
                     "текста (без повтора введённого), либо пустой строкой, "
                     "если не уверен. Без пояснений и markdown.")
-        return ("Дополни начало команды bash. Ответь ТОЛЬКО продолжением "
+        return (hint + "Дополни начало команды bash. Ответь ТОЛЬКО продолжением "
                 "текста (без повтора введённого), либо пустой строкой, "
                 "если не уверен. Без пояснений и markdown.")
 

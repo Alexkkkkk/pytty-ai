@@ -41,6 +41,11 @@ try:
 except ImportError:
     bootprof = None
 
+try:
+    import auto_fixer as autofix
+except ImportError:
+    autofix = None
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
@@ -1104,6 +1109,54 @@ class MainWindow(QMainWindow):
                 "[ошибка: не удалось записать learned_cases.md]\n")
 
     # ---------- Самообучение: навыки, правила, самопереписывание ----------
+    # ---------- авто-чинильщик (фоновый поиск решений) ----------
+    def _fixer_llm(self, messages, on_done):
+        if self._fixer_busy:
+            on_done("")
+            return
+        self._fixer_busy = True
+        def _ok(text):
+            self._fixer_busy = False
+            on_done(text)
+        def _fail(err):
+            self._fixer_busy = False
+            self.ai_output.appendPlainText("[авто-чин: ИИ недоступен: %s]\n" % err)
+            if self._fixer:
+                self._fixer._reset()
+        self._fixer_worker = AiWorker(self.settings, messages, self)
+        self._fixer_worker.result.connect(_ok)
+        self._fixer_worker.failed.connect(_fail)
+        self._fixer_worker.start()
+
+    def _fixer_send(self, cmd):
+        if self.ssh and self.ssh.isRunning():
+            self.ssh.send(cmd + "\r")
+            self.ai_output.appendPlainText("авто-чин: %s\n" % cmd)
+
+    def _fixer_recent(self):
+        return self.term.last_output(30)
+
+    def _fixer_connected(self):
+        return bool(self.ssh and self.ssh.isRunning())
+
+    def _fixer_append_kb(self, text):
+        try:
+            with open("learned_cases.md", "a", encoding="utf-8") as f:
+                f.write(text)
+            self.ai_output.appendPlainText("[авто-чин: кейс записан в БД learned_cases.md]\n")
+        except OSError:
+            pass
+
+    def _fixer_confirm(self, cmd):
+        ret = QMessageBox.question(
+            self, "Авто-чин",
+            "Авто-чинильщик хочет выполнить потенциально опасную команду:\n\n%s\n\nВыполнить?" % cmd)
+        return ret == QMessageBox.StandardButton.Yes
+
+    def _fixer_tick(self):
+        if autofix and self._fixer:
+            self._fixer.tick()
+
     def _load_user_patches(self):
         """Загружает user_patches.py с валидацией (паттерн mue-x):
         ast.parse, только безопасные конструкции верхнего уровня,

@@ -936,14 +936,18 @@ class MainWindow(QMainWindow):
                 os.path.dirname(os.path.abspath(sys.argv[0]))]
         if hasattr(sys, "_MEIPASS"):  # PyInstaller --onefile
             dirs.append(sys._MEIPASS)
-        for d in dirs:
-            path = os.path.join(d, "u_boot_errors_kb.md")
-            try:
-                with open(path, encoding="utf-8") as f:
-                    return f.read()
-            except OSError:
-                continue
-        return ""
+        parts = []
+        for name in ("u_boot_errors_kb.md", "tv_service_kb.md",
+                     "learned_cases.md"):
+            for d in dirs:
+                path = os.path.join(d, name)
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        parts.append(f.read())
+                    break
+                except OSError:
+                    continue
+        return "\n\n".join(parts)
 
     def _system_prompt(self):
         """Системный промпт с учётом профиля и базы знаний."""

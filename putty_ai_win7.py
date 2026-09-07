@@ -36,6 +36,11 @@ try:
 except ImportError:
     serial = None
 
+try:
+    import boot_profiles as bootprof
+except ImportError:
+    bootprof = None
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
@@ -946,13 +951,13 @@ class MainWindow(QMainWindow):
             kb = ("\n\nБаза знаний по ошибкам U-Boot/прошивке (опирайся на неё, "
                   "но не цитируй дословно):\n" + self.kb_text)
         if profile == "uboot":
-            return (
+            return (hint +
                 "Ты — эксперт по загрузчику U-Boot и прошивке embedded-устройств "
                 "(TV-приставки, роутеры; SoC Amlogic/MediaTek/M7332). Пользователь "
                 "работает в консоли U-Boot через UART (PuTTY). Отвечай по-русски: "
                 "1) причина ошибки, 2) точные команды для исправления, 3) чем "
                 "проверить результат. Кратко, без воды." + kb)
-        return (
+        return (hint +
             "Ты помощник в терминале Linux. Объясни по-русски кратко: "
             "есть ли в выводе ошибки, почему они возникли и как "
             "исправить. Если всё в порядке — скажи об этом одной фразой." + kb)

@@ -36,6 +36,11 @@ try:
 except ImportError:
     serial = None
 
+try:
+    import boot_profiles as bootprof
+except ImportError:
+    bootprof = None
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
@@ -148,6 +153,8 @@ class Terminal(QPlainTextEdit):
 
     # ---- вывод от сервера ----
     def insert_remote(self, text: str):
+        if bootprof:
+            bootprof.feed(text)   # автоопределение загрузчика (Realtek/MediaTek/...)
         self.moveCursor(QTextCursor.MoveOperation.End)
         self.insertPlainText(text)
         self.moveCursor(QTextCursor.MoveOperation.End)
@@ -941,6 +948,7 @@ class MainWindow(QMainWindow):
     def _system_prompt(self):
         """Системный промпт с учётом профиля и базы знаний."""
         profile = self.profile_combo.currentData()
+        hint = bootprof.prompt_hint() if bootprof else ""
         kb = ""
         if self.kb_text:
             kb = ("\n\nБаза знаний по ошибкам U-Boot/прошивке (опирайся на неё, "
@@ -958,21 +966,23 @@ class MainWindow(QMainWindow):
             "исправить. Если всё в порядке — скажи об этом одной фразой." + kb)
 
     def _cmd_prompt(self):
+        hint = bootprof.prompt_hint() if bootprof else ""
         if self.profile_combo.currentData() == "uboot":
-            return ("Ты — эксперт по U-Boot. Пользователь описывает задачу по "
+            return (hint + "Ты — эксперт по U-Boot. Пользователь описывает задачу по "
                     "прошивке/восстановлению устройства — верни ТОЛЬКО одну "
                     "команду U-Boot (или короткую последовательность через ; ) "
                     "без пояснений и без markdown.")
-        return ("Ты помощник в терминале Linux. Пользователь описывает "
+        return (hint + "Ты помощник в терминале Linux. Пользователь описывает "
                 "задачу — верни ТОЛЬКО одну команду bash без пояснений, "
                 "без markdown и без кавычек вокруг команды.")
 
     def _ac_prompt(self):
+        hint = bootprof.prompt_hint() if bootprof else ""
         if self.profile_combo.currentData() == "uboot":
-            return ("Дополни начало команды U-Boot. Ответь ТОЛЬКО продолжением "
+            return (hint + "Дополни начало команды U-Boot. Ответь ТОЛЬКО продолжением "
                     "текста (без повтора введённого), либо пустой строкой, "
                     "если не уверен. Без пояснений и markdown.")
-        return ("Дополни начало команды bash. Ответь ТОЛЬКО продолжением "
+        return (hint + "Дополни начало команды bash. Ответь ТОЛЬКО продолжением "
                 "текста (без повтора введённого), либо пустой строкой, "
                 "если не уверен. Без пояснений и markdown.")
 

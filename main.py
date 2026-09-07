@@ -459,29 +459,46 @@ async def put_sync(name: str, request: Request,
 KEYS_FILE = "keys.json"
 
 
+def _keys_path():
+    return os.path.join(DATA, KEYS_FILE)
+
+
 def _load_keys():
     try:
-        with open(_path(KEYS_FILE), encoding="utf-8") as f:
+        with open(_keys_path(), encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return {}
 
 
 def _save_keys(k):
-    with open(_path(KEYS_FILE), "w", encoding="utf-8") as f:
+    with open(_keys_path(), "w", encoding="utf-8") as f:
         json.dump(k, f, ensure_ascii=False, indent=2)
     try:
-        os.chmod(_path(KEYS_FILE), 0o600)
+        os.chmod(_keys_path(), 0o600)
     except OSError:
         pass
 
 
+def _key_hint(v):
+    """Безопасная подсказка о ключе: видны только префикс и последние 4 символа."""
+    v = str(v or "")
+    if not v:
+        return ""
+    if len(v) <= 8:
+        return "задан"
+    return v[:4] + "…" + v[-4:]
+
+
 @app.get("/api/keys")
 def keys_status():
-    """Статус ключей — только факт наличия, сами ключи в API не отдаются."""
+    """Статус ключей — факт наличия + маскированная подсказка,
+    полные ключи в API не отдаются."""
     k = _load_keys()
     return {"groq": bool(k.get("groq_api_key")),
-            "github": bool(k.get("github_token"))}
+            "github": bool(k.get("github_token")),
+            "groq_hint": _key_hint(k.get("groq_api_key")),
+            "github_hint": _key_hint(k.get("github_token"))}
 
 
 @app.put("/api/keys")
@@ -533,6 +550,14 @@ async def keys_test(request: Request, x_token: Optional[str] = Header(None)):
         else:
             out["models"] = len(data.get("data", []))
         return out
+    except urllib.error.HTTPError as e:
+        msg = {401: "неверный ключ (401)", 403: "доступ запрещён (403)",
+               404: "endpoint не найден (404)", 429: "превышен лимит (429)"
+               }.get(e.code, "HTTP %d" % e.code)
+        return {"ok": False, "error": msg}
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        reason = getattr(e, "reason", e)
+        return {"ok": False, "error": "сеть: %s" % str(reason)[:120]}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
 
@@ -967,13 +992,20 @@ a{color:#58a6ff}
 <p class="small">Обновление каждые 15 секунд · API: <a href="/log">живой лог</a> · <a href="/docs">/docs</a> · синхронизация: <code>/api/sync/*</code></p>
 </div>
 <script>
+function setKeyBadge(kind, text, cls){
+  const el = document.getElementById('st-' + kind);
+  el.textContent = text;
+  el.className = 'badge ' + cls;
+}
 async function loadKeysStatus(){
   try{
     const r = await fetch('/api/keys'); const d = await r.json();
     for (const k of ['groq','github']){
-      const el = document.getElementById('st-'+k);
-      el.textContent = d[k] ? 'задан' : 'не задан';
-      el.className = 'badge ' + (d[k] ? 'b-green' : 'b-gray');
+      if (d[k]){
+        setKeyBadge(k, (d[k + '_hint'] || 'задан'), 'b-green');
+      } else {
+        setKeyBadge(k, 'не задан', 'b-gray');
+      }
     }
   }catch(e){}
 }
@@ -987,21 +1019,37 @@ async function saveKey(kind){
     body: JSON.stringify(body)});
   let d = {};
   try { d = await r.json(); } catch(e) {}
-  msg.textContent = r.ok ? ('Ключ ' + kind + ' сохранён') :
-    ('Ошибка: ' + (d.detail || d.error || r.status));
+  if (!r.ok){
+    msg.textContent = 'Ошибка: ' + (d.detail || d.error || r.status);
+    return;
+  }
+  msg.textContent = 'Ключ ' + kind + ' сохранён, проверяю подключение…';
   inp.value = '';
-  loadKeysStatus();
+  await loadKeysStatus();
+  await testKey(kind);
 }
 async function testKey(kind){
   const msg = document.getElementById('keys-msg');
   const tk = document.getElementById('chat-token').value;
+  setKeyBadge(kind, 'проверка…', 'b-gray');
   const r = await fetch('/api/keys/test', {method: 'POST',
     headers: {'Content-Type': 'application/json', 'X-Token': tk},
     body: JSON.stringify({type: kind})});
   let d = {};
   try { d = await r.json(); } catch(e) {}
-  msg.textContent = kind + ': ' + (d.ok ? ('работает' + (d.user ? ' (GitHub: ' + d.user + ')' : ''))
-    : ('НЕ работает — ' + (d.error || d.detail || '?')));
+  const ok = (d.ok === true);
+  msg.textContent = kind + ': ' + (ok
+    ? ('подключён ✓' + (d.user ? ' (GitHub: ' + d.user + ')'
+        : (d.models != null ? ' (моделей: ' + d.models + ')' : '')))
+    : ('НЕ работает — ' + (d.error || d.detail || r.status)));
+  if (ok){
+    setKeyBadge(kind, 'подключён', 'b-green');
+  } else {
+    const st = document.getElementById('st-' + kind);
+    const wasSet = st.textContent !== 'не задан';
+    setKeyBadge(kind, wasSet ? 'задан, ошибка' : 'не задан',
+      wasSet ? 'b-red' : 'b-gray');
+  }
 }
 async function load(){
   loadKeysStatus();

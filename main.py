@@ -68,6 +68,10 @@ LEARN_SOURCES = [u.strip() for u in os.environ.get(
     "LEARN_SOURCES",
     "https://kenotrontv.ru/,https://mslw.com/bb/,"
     "https://remont-aud.net/,http://televid-sib.org/,"
+    "https://teleservis.net/forums/2/,"
+    "https://teleservis.net/forums/4/,"
+    "https://teleservis.net/forums/8/,"
+    "https://teleservis.net/forums/85/,"
     "https://4pda.to/forum/index.php?act=idx").split(",") if u.strip()]
 LEARN_STATE = {"queue": [], "seen": set(), "done": 0, "last": None}
 

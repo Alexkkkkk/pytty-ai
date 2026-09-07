@@ -547,6 +547,56 @@ class AnalysisDialog(QDialog):
         lay.addLayout(row)
 
 
+class ActionDialog(QDialog):
+    """Диалог выбора действия после анализа."""
+
+    def __init__(self, options, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Что делаем?")
+        self.resize(520, 60 * len(options) + 130)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("ИИ проанализировала устройство. "
+                             "Выберите действие:"))
+        self.radios = []
+        for i, opt in enumerate(options):
+            rb = QRadioButton(opt[:200])
+            lay.addWidget(rb)
+            self.radios.append(rb)
+        if self.radios:
+            self.radios[0].setChecked(True)
+        self.custom = QLineEdit()
+        self.custom.setPlaceholderText(
+            "…или напишите своё действие здесь и нажмите «Свой вариант»")
+        lay.addWidget(self.custom)
+        row = QHBoxLayout()
+        btn_custom = QPushButton("Свой вариант")
+        btn_custom.clicked.connect(self._pick_custom)
+        btn_ok = QPushButton("Выполнить выбранное")
+        btn_ok.clicked.connect(self.accept)
+        btn_no = QPushButton("Отмена")
+        btn_no.clicked.connect(self.reject)
+        row.addWidget(btn_custom)
+        row.addStretch(1)
+        row.addWidget(btn_ok)
+        row.addWidget(btn_no)
+        lay.addLayout(row)
+        self._choice = None
+
+    def _pick_custom(self):
+        t = self.custom.text().strip()
+        if t:
+            self._choice = t
+            self.accept()
+
+    def choice(self):
+        if self._choice:
+            return self._choice
+        for rb in self.radios:
+            if rb.isChecked():
+                return rb.text()
+        return ""
+
+
 class AiSettingsDialog(QDialog):
     """Настройки ИИ: пресеты провайдеров + ручной ввод."""
 
@@ -2109,6 +2159,82 @@ class MainWindow(QMainWindow):
             self.sync_status.setText("ошибка отправки: %s" % ex)
             self.ai_output.appendPlainText("[sync upload: %s]\n" % ex)
 
+    # ---------- Анализ → спросить → сделать ----------
+    def _analyze_and_ask(self):
+        """Анализ → предложение вариантов → выбор → исполнение агентом."""
+        if not self._ai_available():
+            return
+        kb = ("\n\nБаза знаний:\n" + self.kb_text) if self.kb_text else ""
+        sys = ("Ты — эксперт-диагност по embedded-устройствам и U-Boot. "
+               "Сделай ПОЛНЫЙ анализ вывода терминала по шаблону: "
+               "1. УСТРОЙСТВО/ПЛАТФОРМА 2. СОСТОЯНИЕ 3. ОШИБКИ "
+               "4. КОРНЕВАЯ ПРИЧИНА 5. ПЛАН ВОССТАНОВЛЕНИЯ "
+               "6. РИСКИ. По-русски, кратко." + kb)
+        out = self.term.last_output(150)
+        self.ai_output.appendPlainText("— анализирую для выбора действия…\n")
+        self._ask_ai([{"role": "system", "content": sys},
+                      {"role": "user", "content": "Вывод терминала:\n" + out}],
+                     self._analysis_ask_got)
+
+    def _analysis_ask_got(self, report):
+        dlg = AnalysisDialog(report, self)
+        dlg.exec()
+        # предлагаем варианты действий
+        sys = ("По отчёту ниже предложи 3-4 КОНКРЕТНЫХ действия для "
+               "исправления. Ответь СТРОГО: каждое действие с новой строки "
+               "в виде '1. действие — команды через ;'. Без пояснений.")
+        self._ask_ai([{"role": "system", "content": sys},
+                      {"role": "user", "content": "Отчёт:\n" + report}],
+                     self._options_got)
+
+    def _options_got(self, text):
+        options = []
+        for line in text.splitlines():
+            line = line.strip()
+            if len(line) > 6 and line[0].isdigit():
+                options.append(line)
+        if not options:
+            self.ai_output.appendPlainText(
+                "[варианты не получены — запустите «Исправить автоматически»]\n")
+            return
+        dlg = ActionDialog(options, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.choice():
+            self.ai_output.appendPlainText("— действие отменено\n")
+            return
+        self.ai_output.appendPlainText(
+            "— выбрано: %s\n" % dlg.choice()[:100])
+        self._run_agent_with_goal(dlg.choice())
+
+    def _run_agent_with_goal(self, goal):
+        """Запуск агента с конкретной целью от пользователя."""
+        if not (self.ssh and self.ssh.isRunning()):
+            QMessageBox.information(
+                self, "Агент",
+                "Подключитесь к устройству и повторите.")
+            return
+        if self._agent_active:
+            self._agent_finish("перезапуск с новой целью")
+        self._ai_busy = True
+        self._agent_active = True
+        self._agent_steps = 0
+        self._cmd_counts = {}
+        self._wait_count = 0
+        self._reflect_used = 0
+        self._agent_history = [
+            {"role": "system", "content": self._agent_prompt()}]
+        out = self.term.last_output(100)
+        self._agent_history.append(
+            {"role": "user", "content":
+                "Текущий вывод терминала:\n" + out +
+                "\n\nЦЕЛЬ ОТ ПОЛЬЗОВАТЕЛЯ: " + goal +
+                "\nВыполни её пошагово командами."})
+        self.ai_output.appendPlainText("— агент выполняет выбранное…\n")
+        self.agent_status.setText("агент работает…")
+        if self.chk_crew.isChecked():
+            self._plan_first()
+        else:
+            self._agent_request()
+
     # ---------- Полный анализ ----------
     def _full_analysis(self):
         if not self._ai_available():
@@ -2473,6 +2599,12 @@ class MainWindow(QMainWindow):
         btn_explain = QPushButton("Объяснить / найти ошибки")
         btn_explain.clicked.connect(self.explain_output)
         l1.addWidget(btn_explain)
+        btn_full = QPushButton("Полный анализ устройства")
+        btn_full.clicked.connect(self._full_analysis)
+        l1.addWidget(btn_full)
+        btn_ask = QPushButton("Анализ → спросить → сделать")
+        btn_ask.clicked.connect(self._analyze_and_ask)
+        l1.addWidget(btn_ask)
 
         # -- подбор команды --
         g2 = QGroupBox("Спросить ИИ: какую команду ввести?")

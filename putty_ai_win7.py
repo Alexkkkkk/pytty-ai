@@ -849,6 +849,23 @@ class MainWindow(QMainWindow):
             self._fixer_timer.timeout.connect(self._fixer_tick)
             self._fixer_timer.start()
 
+        # --- саморазвитие: статистика, саморегулирование, обновление ---
+        self._evo = None
+        if selfev:
+            try:
+                self._evo = selfev.SelfEvoCore(
+                    log=lambda m: self.ai_output.appendPlainText(m),
+                    llm_call=self._fixer_llm,
+                    apply_config=self._evo_apply_config)
+                if autofix:
+                    autofix.ON_STRATEGY = self._evo.note_strategy_tried
+                self._evo_timer = QTimer(self)
+                self._evo_timer.setInterval(60000)
+                self._evo_timer.timeout.connect(self._evo_tick)
+                self._evo_timer.start()
+            except Exception:
+                self._evo = None
+
         # --- умное ожидание (expect), верификатор, рефлексия, лог сессии ---
         self._expecting = False
         self._expect_deadline = 0.0
@@ -1127,6 +1144,70 @@ class MainWindow(QMainWindow):
                 "[ошибка: не удалось записать learned_cases.md]\n")
 
     # ---------- Самообучение: навыки, правила, самопереписывание ----------
+    # ---------- авто-чинильщик (фоновый поиск решений) ----------
+    def _fixer_llm(self, messages, on_done):
+        if self._fixer_busy:
+            on_done("")
+            return
+        self._fixer_busy = True
+        def _ok(text):
+            self._fixer_busy = False
+            on_done(text)
+        def _fail(err):
+            self._fixer_busy = False
+            self.ai_output.appendPlainText("[авто-чин: ИИ недоступен: %s]\n" % err)
+            if self._fixer:
+                self._fixer._reset()
+        self._fixer_worker = AiWorker(self.settings, messages, self)
+        self._fixer_worker.result.connect(_ok)
+        self._fixer_worker.failed.connect(_fail)
+        self._fixer_worker.start()
+
+    def _fixer_send(self, cmd):
+        if self.ssh and self.ssh.isRunning():
+            self.ssh.send(cmd + "\r")
+            self.ai_output.appendPlainText("авто-чин: %s\n" % cmd)
+
+    def _fixer_recent(self):
+        return self.term.last_output(30)
+
+    def _fixer_connected(self):
+        return bool(self.ssh and self.ssh.isRunning())
+
+    def _fixer_append_kb(self, text):
+        try:
+            with open("learned_cases.md", "a", encoding="utf-8") as f:
+                f.write(text)
+            self.ai_output.appendPlainText("[авто-чин: кейс записан в БД learned_cases.md]\n")
+        except OSError:
+            pass
+        if getattr(self, "_evo", None) and self._fixer:
+            self._evo.note_success(self._fixer.attempt)
+
+    def _fixer_confirm(self, cmd):
+        ret = QMessageBox.question(
+            self, "Авто-чин",
+            "Авто-чинильщик хочет выполнить потенциально опасную команду:\n\n%s\n\nВыполнить?" % cmd)
+        return ret == QMessageBox.Yes
+
+    def _fixer_tick(self):
+        if autofix and self._fixer:
+            self._fixer.tick()
+
+    # ---------- саморазвитие (self_evo) ----------
+    def _evo_apply_config(self, cfg):
+        if self._fixer and "idle_timeout" in cfg:
+            self._fixer.idle_timeout = cfg["idle_timeout"]
+        if autofix and "cooldown_scale" in cfg:
+            sc = cfg["cooldown_scale"]
+            autofix.COOLDOWN_STEPS[:] = [int(p * sc)
+                                         for p in (300, 900, 1800, 3600)]
+        self.ai_output.appendPlainText("[эво]: конфиг применён к живым объектам\n")
+
+    def _evo_tick(self):
+        if self._evo:
+            self._evo.tick()
+
     def _load_user_patches(self):
         """Загружает user_patches.py с валидацией (паттерн mue-x):
         ast.parse, только безопасные конструкции верхнего уровня,

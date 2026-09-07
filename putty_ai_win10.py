@@ -46,6 +46,11 @@ try:
 except ImportError:
     autofix = None
 
+try:
+    import self_evo as selfev
+except ImportError:
+    selfev = None
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
@@ -830,6 +835,41 @@ class MainWindow(QMainWindow):
         self._last_skill_check = 0.0
         self._last_hook_msg = ""
         self._load_user_patches()
+
+        # --- авто-чинильщик: поиск решений в режиме простоя ---
+        self._fixer_busy = False
+        self._fixer_worker = None
+        self._fixer = None
+        if autofix:
+            self._fixer = autofix.AutoFixerCore(
+                llm_call=self._fixer_llm,
+                send_cmd=self._fixer_send,
+                get_recent=self._fixer_recent,
+                is_connected=self._fixer_connected,
+                log=lambda m: self.ai_output.appendPlainText(m),
+                append_kb=self._fixer_append_kb,
+                ask_confirm=self._fixer_confirm)
+            self._fixer_timer = QTimer(self)
+            self._fixer_timer.setInterval(3000)
+            self._fixer_timer.timeout.connect(self._fixer_tick)
+            self._fixer_timer.start()
+
+        # --- саморазвитие: статистика, саморегулирование, обновление ---
+        self._evo = None
+        if selfev:
+            try:
+                self._evo = selfev.SelfEvoCore(
+                    log=lambda m: self.ai_output.appendPlainText(m),
+                    llm_call=self._fixer_llm,
+                    apply_config=self._evo_apply_config)
+                if autofix:
+                    autofix.ON_STRATEGY = self._evo.note_strategy_tried
+                self._evo_timer = QTimer(self)
+                self._evo_timer.setInterval(60000)
+                self._evo_timer.timeout.connect(self._evo_tick)
+                self._evo_timer.start()
+            except Exception:
+                self._evo = None
 
         # --- умное ожидание (expect), верификатор, рефлексия, лог сессии ---
         self._expecting = False

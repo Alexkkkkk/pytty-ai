@@ -129,6 +129,10 @@ STRATEGIES = [
 # Нарастающие паузы между попытками (сек): 5, 15, 30, 60 минут, дальше 60
 COOLDOWN_STEPS = [300, 900, 1800, 3600]
 
+# Внешний хук саморазвития: вызывается с индексом стратегии при каждой
+# попытке (self_evo учится на своей эффективности).
+ON_STRATEGY = None
+
 
 class AutoFixerCore:
     def __init__(self, llm_call, send_cmd, get_recent, is_connected,

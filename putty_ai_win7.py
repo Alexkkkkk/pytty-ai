@@ -40,13 +40,13 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
     QLabel, QPlainTextEdit, QTextEdit, QToolBar, QDockWidget, QMessageBox,
-    QFileDialog, QGroupBox, QRadioButton, QScrollArea, QSizePolicy,
-    QListWidget, QListWidgetItem
+    QFileDialog, QGroupBox, QAction, QShortcut, QRadioButton, QScrollArea,
+    QSizePolicy, QListWidget, QListWidgetItem
 )
 from PyQt5.QtCore import Qt, QThread, QTimer, QUrl, QEventLoop, pyqtSignal
 from PyQt5.QtGui import (
-    QAction, QFont, QIcon, QKeySequence, QShortcut, QDesktopServices,
-    QTextCursor, QGuiApplication, QColor
+    QFont, QIcon, QKeySequence, QDesktopServices, QTextCursor,
+    QGuiApplication, QColor
 )
 
 

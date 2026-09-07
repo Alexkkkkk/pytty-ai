@@ -40,7 +40,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
     QLabel, QPlainTextEdit, QTextEdit, QToolBar, QDockWidget, QMessageBox,
-    QFileDialog, QGroupBox, QListWidget, QListWidgetItem
+    QFileDialog, QGroupBox, QRadioButton, QScrollArea, QSizePolicy,
+    QListWidget, QListWidgetItem
 )
 from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, QEventLoop, pyqtSignal
 from PyQt6.QtGui import (
@@ -782,6 +783,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PuTTY-AI v%s — SSH-клиент с ИИ-помощником"
                             % APP_VERSION)
         self.resize(1000, 640)
+        # подгонка под маленькие экраны (нетбуки 1024x600 и т.п.)
+        try:
+            scr = QApplication.primaryScreen().availableGeometry()
+            if self.height() > scr.height():
+                self.resize(self.width(), int(scr.height() * 0.92))
+            if self.width() > scr.width():
+                self.resize(int(scr.width() * 0.92), self.height())
+        except Exception:
+            pass
 
         # --- папка данных пользователя нужна всем остальным —
         self._base_dir = self._data_dir()
@@ -2766,8 +2776,17 @@ class MainWindow(QMainWindow):
         l9.addRow(row_m)
         lay.addWidget(g9)
 
+        # панель в скролле — корректно на любом разрешении экрана
+        panel.setSizePolicy(QSizePolicy.Policy.Ignored,
+                            QSizePolicy.Policy.Ignored)
+        panel.setMinimumHeight(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(0)
+        scroll.setWidget(panel)
         dock = QDockWidget("ИИ-помощник")
-        dock.setWidget(panel)
+        dock.setWidget(scroll)
+        dock.setMaximumWidth(520)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
     # ---------- SSH ----------

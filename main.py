@@ -456,6 +456,87 @@ async def put_sync(name: str, request: Request,
     return {"ok": True, "bytes": len(body)}
 
 
+KEYS_FILE = "keys.json"
+
+
+def _load_keys():
+    try:
+        with open(_path(KEYS_FILE), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_keys(k):
+    with open(_path(KEYS_FILE), "w", encoding="utf-8") as f:
+        json.dump(k, f, ensure_ascii=False, indent=2)
+    try:
+        os.chmod(_path(KEYS_FILE), 0o600)
+    except OSError:
+        pass
+
+
+@app.get("/api/keys")
+def keys_status():
+    """Статус ключей — только факт наличия, сами ключи в API не отдаются."""
+    k = _load_keys()
+    return {"groq": bool(k.get("groq_api_key")),
+            "github": bool(k.get("github_token"))}
+
+
+@app.put("/api/keys")
+async def keys_put(request: Request, x_token: Optional[str] = Header(None)):
+    """Сохранение/удаление ключей Groq и GitHub (нужен X-Token)."""
+    _check_token(x_token)
+    body = await request.json()
+    k = _load_keys()
+    for src in ("groq_api_key", "github_token"):
+        if src in body:
+            v = str(body[src]).strip()
+            if v:
+                k[src] = v
+            else:
+                k.pop(src, None)
+    _save_keys(k)
+    STATS["puts"] += 1
+    _ev("KEYS updated: groq=%s github=%s" %
+        (bool(k.get("groq_api_key")), bool(k.get("github_token"))))
+    return {"ok": True, **keys_status()}
+
+
+@app.post("/api/keys/test")
+async def keys_test(request: Request, x_token: Optional[str] = Header(None)):
+    """Проверка ключа реальным запросом: groq — список моделей,
+    github — /user (возвращает логин аккаунта)."""
+    _check_token(x_token)
+    import urllib.request
+    body = await request.json()
+    kind = body.get("type")
+    k = _load_keys()
+    if kind == "groq":
+        token, url = k.get("groq_api_key"), "https://api.groq.com/openai/v1/models"
+    elif kind == "github":
+        token, url = k.get("github_token"), "https://api.github.com/user"
+    else:
+        return {"ok": False, "error": "unknown type"}
+    if not token:
+        return {"ok": False, "error": "ключ не задан"}
+    req = urllib.request.Request(url, headers={
+        "Authorization": "Bearer " + token,
+        "User-Agent": "pytty-ai-server"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8", "ignore"))
+        out = {"ok": True}
+        if kind == "github":
+            out["user"] = data.get("login")
+        else:
+            out["models"] = len(data.get("data", []))
+        return out
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
 def _start_llamafile():
     global _local_proc, LOCAL_UPSTREAM
     if not LLAMAFILE_URL or _local_proc is not None:
@@ -793,7 +874,7 @@ th{background:#1c2128;text-align:left;padding:9px 12px;font-size:12px;color:#9fd
 td{padding:8px 12px;border-top:1px solid #21262d;font-size:13px;vertical-align:top}
 tr:hover td{background:#1c2128}
 .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px}
-.b-red{background:#3d1d1d;color:#ff7b72}.b-gray{background:#21262d;color:#8b949e}
+.b-red{background:#3d1d1d;color:#ff7b72}.b-gray{background:#21262d;color:#8b949e}.b-green{background:#12261a;color:#7ee787}
 .small{color:#8b949e;font-size:12px}
 .lvlbar{background:#21262d;border-radius:6px;height:10px;margin:8px 0 4px;overflow:hidden}
 #lvl-fill{height:100%;width:0;background:linear-gradient(90deg,#238636,#7ee787);transition:width .6s}
@@ -838,6 +919,22 @@ a{color:#58a6ff}
 </div>
 </div>
 <h3 style="color:#9fd0ff">Навыки мастерской</h3>
+<div class="card" style="margin-bottom:22px">
+<div style="font-size:12px;color:#9fd0ff;text-transform:uppercase;margin-bottom:10px">Ключи API</div>
+<div class="chat-row" style="margin-bottom:8px">
+<input type="password" id="k-groq" placeholder="Groq API key (gsk_...)" autocomplete="off" style="flex:1">
+<button onclick="saveKey('groq')">Сохранить</button>
+<button onclick="testKey('groq')" style="background:#1f6feb">Проверить</button>
+<span class="badge b-gray" id="st-groq">не задан</span>
+</div>
+<div class="chat-row">
+<input type="password" id="k-github" placeholder="GitHub token (ghp_...)" autocomplete="off" style="flex:1">
+<button onclick="saveKey('github')">Сохранить</button>
+<button onclick="testKey('github')" style="background:#1f6feb">Проверить</button>
+<span class="badge b-gray" id="st-github">не задан</span>
+</div>
+<div class="small" id="keys-msg" style="margin-top:8px">Ключи хранятся на сервере (keys.json, права 600), через API возвращается только факт наличия.</div>
+</div>
 <table><thead><tr><th>Ошибка (триггер)</th><th>Решение</th><th>Использований</th><th></th></tr></thead>
 <tbody id="skills"></tbody></table>
 <h3 style="color:#9fd0ff">Активность мастерской (14 дней)</h3>
@@ -870,7 +967,44 @@ a{color:#58a6ff}
 <p class="small">Обновление каждые 15 секунд · API: <a href="/log">живой лог</a> · <a href="/docs">/docs</a> · синхронизация: <code>/api/sync/*</code></p>
 </div>
 <script>
+async function loadKeysStatus(){
+  try{
+    const r = await fetch('/api/keys'); const d = await r.json();
+    for (const k of ['groq','github']){
+      const el = document.getElementById('st-'+k);
+      el.textContent = d[k] ? 'задан' : 'не задан';
+      el.className = 'badge ' + (d[k] ? 'b-green' : 'b-gray');
+    }
+  }catch(e){}
+}
+async function saveKey(kind){
+  const inp = document.getElementById('k-'+kind);
+  const msg = document.getElementById('keys-msg');
+  const tk = document.getElementById('chat-token').value;
+  const body = (kind === 'groq') ? {groq_api_key: inp.value} : {github_token: inp.value};
+  const r = await fetch('/api/keys', {method: 'PUT',
+    headers: {'Content-Type': 'application/json', 'X-Token': tk},
+    body: JSON.stringify(body)});
+  let d = {};
+  try { d = await r.json(); } catch(e) {}
+  msg.textContent = r.ok ? ('Ключ ' + kind + ' сохранён') :
+    ('Ошибка: ' + (d.detail || d.error || r.status));
+  inp.value = '';
+  loadKeysStatus();
+}
+async function testKey(kind){
+  const msg = document.getElementById('keys-msg');
+  const tk = document.getElementById('chat-token').value;
+  const r = await fetch('/api/keys/test', {method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Token': tk},
+    body: JSON.stringify({type: kind})});
+  let d = {};
+  try { d = await r.json(); } catch(e) {}
+  msg.textContent = kind + ': ' + (d.ok ? ('работает' + (d.user ? ' (GitHub: ' + d.user + ')' : ''))
+    : ('НЕ работает — ' + (d.error || d.detail || '?')));
+}
 async function load(){
+  loadKeysStatus();
   try{
     const r = await fetch('/api/stats'); const d = await r.json();
     document.getElementById('c-skills').textContent = d.skills;

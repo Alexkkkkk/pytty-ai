@@ -28,6 +28,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import urllib.request
 from typing import Optional
@@ -393,12 +394,23 @@ def _bearer(auth):
     return None
 
 
+def _effective_token():
+    """Пароль мастерской: env SYNC_TOKEN, иначе файл data/sync_token.txt
+    (создаётся кнопкой «Сменить пароль»), иначе дефолт для первого запуска."""
+    if SYNC_TOKEN:
+        return SYNC_TOKEN
+    try:
+        with open(os.path.join(DATA, "sync_token.txt"), encoding="utf-8") as f:
+            t = f.read().strip()
+            if t:
+                return t
+    except OSError:
+        pass
+    return "putty-ai-2026"
+
+
 def _check_token(x_token: Optional[str]):
-    """Если SYNC_TOKEN не задан в env — используем пароль по умолчанию,
-    чтобы сервер работал сразу после деплоя. Задайте env SYNC_TOKEN,
-    чтобы сменить пароль."""
-    effective = SYNC_TOKEN or "putty-ai-2026"
-    if x_token != effective:
+    if x_token != _effective_token():
         raise HTTPException(status_code=403, detail="bad token")
 
 
@@ -560,6 +572,78 @@ async def keys_test(request: Request, x_token: Optional[str] = Header(None)):
         return {"ok": False, "error": "сеть: %s" % str(reason)[:120]}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
+
+
+@app.post("/api/token")
+async def change_token(request: Request, x_token: Optional[str] = Header(None)):
+    """Смена пароля мастерской. Действует мгновенно, переживает перезапуск
+    (хранится в data/sync_token.txt, права 600)."""
+    _check_token(x_token)
+    body = await request.json()
+    new = str(body.get("token", "")).strip()
+    if len(new) < 6:
+        return {"ok": False, "error": "пароль минимум 6 символов"}
+    p = os.path.join(DATA, "sync_token.txt")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(new)
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+    _ev("SYNC TOKEN changed")
+    return {"ok": True}
+
+
+SELF_REPO = os.environ.get(
+    "SELF_REPO",
+    "https://raw.githubusercontent.com/Alexkkkkk/pytty-ai/main/main.py")
+
+
+@app.post("/api/admin/update")
+async def self_update(x_token: Optional[str] = Header(None)):
+    """Обновление кода сервера: скачивание main.py из GitHub, проверка
+    синтаксиса, бэкап (main.py.bak), атомарная замена и самоперезапуск."""
+    _check_token(x_token)
+    import py_compile
+    import tempfile
+    try:
+        with urllib.request.urlopen(SELF_REPO, timeout=30) as r:
+            new_code = r.read()
+    except Exception as e:
+        return {"ok": False, "error": "скачивание: %s" % str(e)[:150]}
+    if len(new_code) < 10000:
+        return {"ok": False,
+                "error": "подозрительно маленький файл (%d B)" % len(new_code)}
+    myself = os.path.abspath(__file__)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".py",
+                                      dir=os.path.dirname(myself))
+    try:
+        tmp.write(new_code)
+        tmp.close()
+        try:
+            py_compile.compile(tmp.name, doraise=True)
+        except py_compile.PyCompileError as e:
+            return {"ok": False,
+                    "error": "синтаксис нового main.py: %s" % str(e)[:150]}
+        shutil.copy2(myself, myself + ".bak")
+        os.replace(tmp.name, myself)
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    _ev("SELF-UPDATE: код заменён (%d B), перезапуск" % len(new_code))
+    try:
+        argv0 = sys.argv[0]
+        if os.sep in argv0 or (os.altsep and os.altsep in argv0):
+            os.execv(argv0, sys.argv)
+        else:
+            os.execvp(argv0, sys.argv)
+    except Exception as e:
+        _ev("SELF-UPDATE restart failed: %s" % str(e)[:120])
+        return {"ok": True, "restarted": False,
+                "error": "код обновлён, перезапустите сервер: %s" % str(e)[:100]}
+    return {"ok": True, "restarted": True}
 
 
 def _start_llamafile():
@@ -960,6 +1044,18 @@ a{color:#58a6ff}
 </div>
 <div class="small" id="keys-msg" style="margin-top:8px">Ключи хранятся на сервере (keys.json, права 600), через API возвращается только факт наличия.</div>
 </div>
+<div class="card" style="margin-bottom:22px">
+<div style="font-size:12px;color:#9fd0ff;text-transform:uppercase;margin-bottom:10px">Администрирование</div>
+<div class="chat-row" style="margin-bottom:8px">
+<input type="password" id="new-token" placeholder="Новый пароль мастерской (мин. 6 символов)" autocomplete="off" style="flex:1">
+<button onclick="changeToken()" style="background:#8957e5">Сменить пароль</button>
+</div>
+<div class="chat-row">
+<button onclick="selfUpdate()" style="background:#1f6feb">Обновить сервер с GitHub</button>
+<span class="small" id="admin-msg" style="align-self:center"></span>
+</div>
+<div class="small" style="margin-top:8px">Смена пароля действует мгновенно и переживает перезапуск (data/sync_token.txt, права 600). Обновление кода: скачивается main.py из репозитория, проверяется синтаксис, бэкап (main.py.bak), сервер перезапускается сам.</div>
+</div>
 <table><thead><tr><th>Ошибка (триггер)</th><th>Решение</th><th>Использований</th><th></th></tr></thead>
 <tbody id="skills"></tbody></table>
 <h3 style="color:#9fd0ff">Активность мастерской (14 дней)</h3>
@@ -1049,6 +1145,39 @@ async function testKey(kind){
     const wasSet = st.textContent !== 'не задан';
     setKeyBadge(kind, wasSet ? 'задан, ошибка' : 'не задан',
       wasSet ? 'b-red' : 'b-gray');
+  }
+}
+async function changeToken(){
+  const inp = document.getElementById('new-token');
+  const msg = document.getElementById('admin-msg');
+  const tk = document.getElementById('chat-token').value;
+  const r = await fetch('/api/token', {method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Token': tk},
+    body: JSON.stringify({token: inp.value})});
+  let d = {};
+  try { d = await r.json(); } catch(e) {}
+  msg.textContent = d.ok ? 'Пароль сменён' :
+    ('Ошибка: ' + (d.error || d.detail || r.status));
+  if (d.ok){
+    document.getElementById('chat-token').value = inp.value;
+    inp.value = '';
+  }
+}
+async function selfUpdate(){
+  const msg = document.getElementById('admin-msg');
+  const tk = document.getElementById('chat-token').value;
+  if (!confirm('Скачать main.py из GitHub и перезапустить сервер?')) return;
+  msg.textContent = 'Обновление…';
+  try{
+    const r = await fetch('/api/admin/update', {method: 'POST',
+      headers: {'X-Token': tk}});
+    let d = {};
+    try { d = await r.json(); } catch(e) {}
+    msg.textContent = d.ok
+      ? ('Обновлено' + (d.restarted === false ? ' (перезапустите вручную)' : ', перезапуск…'))
+      : ('Ошибка: ' + (d.error || d.detail || r.status));
+  }catch(e){
+    msg.textContent = 'Сервер перезапускается — обновите страницу через 20 секунд';
   }
 }
 async function load(){

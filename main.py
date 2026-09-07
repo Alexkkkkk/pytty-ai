@@ -387,6 +387,12 @@ def _read_text(fname):
         return ""
 
 
+def _bearer(auth):
+    if auth and auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return None
+
+
 def _check_token(x_token: Optional[str]):
     """Если SYNC_TOKEN не задан в env — используем пароль по умолчанию,
     чтобы сервер работал сразу после деплоя. Задайте env SYNC_TOKEN,
@@ -646,8 +652,9 @@ def _relay(path: str, body: bytes):
 
 
 @app.post("/v1/chat/completions")
-async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
-    _check_token(x_token)
+async def relay_chat(request: Request, x_token: Optional[str] = Header(None),
+                     authorization: Optional[str] = Header(None)):
+    _check_token(x_token or _bearer(authorization))
     AI_ACT["now"] += 1
     AI_ACT["total"] += 1
     AI_ACT["last"] = _time.strftime("%H:%M:%S")
@@ -718,8 +725,9 @@ async def relay_chat(request: Request, x_token: Optional[str] = Header(None)):
 
 
 @app.post("/v1/embeddings")
-async def relay_emb(request: Request, x_token: Optional[str] = Header(None)):
-    _check_token(x_token)
+async def relay_emb(request: Request, x_token: Optional[str] = Header(None),
+                    authorization: Optional[str] = Header(None)):
+    _check_token(x_token or _bearer(authorization))
     AI_ACT["now"] += 1
     AI_ACT["total"] += 1
     _bump_daily("ai")

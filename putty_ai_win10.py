@@ -938,7 +938,7 @@ class MainWindow(QMainWindow):
             dirs.append(sys._MEIPASS)
         parts = []
         for name in ("u_boot_errors_kb.md", "tv_service_kb.md",
-                     "learned_cases.md"):
+                     "uart_repair_kb.md", "learned_cases.md"):
             for d in dirs:
                 path = os.path.join(d, name)
                 try:

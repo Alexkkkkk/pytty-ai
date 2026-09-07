@@ -46,6 +46,16 @@ try:
 except ImportError:
     autofix = None
 
+try:
+    import self_evo as selfev
+except ImportError:
+    selfev = None
+
+try:
+    import health_check as healthcheck
+except ImportError:
+    healthcheck = None
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
@@ -155,9 +165,15 @@ class Terminal(QPlainTextEdit):
     def set_connected(self, flag: bool):
         self.connected = flag
         self.buffer = ""
+        if bootprof and flag:
+            bootprof.reset()   # новая сессия — сброс автоопределения загрузчика
 
     # ---- вывод от сервера ----
     def insert_remote(self, text: str):
+        if bootprof:
+            bootprof.feed(text)   # автоопределение загрузчика (Realtek/MediaTek/...)
+        if autofix:
+            autofix.note_output()
         self.moveCursor(QTextCursor.End)
         self.insertPlainText(text)
         self.moveCursor(QTextCursor.End)
@@ -866,6 +882,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 self._evo = None
 
+        # --- самодиагностика при старте: «лучше часов» ---
+        if healthcheck:
+            try:
+                QTimer.singleShot(500, lambda: healthcheck.run_all(
+                    log=lambda m: self.ai_output.appendPlainText(m)))
+            except Exception:
+                pass
+
         # --- умное ожидание (expect), верификатор, рефлексия, лог сессии ---
         self._expecting = False
         self._expect_deadline = 0.0
@@ -993,6 +1017,7 @@ class MainWindow(QMainWindow):
     def _system_prompt(self):
         """Системный промпт с учётом профиля и базы знаний."""
         profile = self.profile_combo.currentData()
+        hint = bootprof.prompt_hint() if bootprof else ""
         kb = ""
         if self.kb_text:
             kb = ("\n\nБаза знаний по ошибкам U-Boot/прошивке (опирайся на неё, "

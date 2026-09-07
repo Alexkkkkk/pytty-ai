@@ -1,0 +1,14 @@
+{
+  "strategies": {
+    "0": {
+      "tries": 5,
+      "solved": 0
+    },
+    "2": {
+      "tries": 11,
+      "solved": 2
+    }
+  },
+  "total_solved": 2,
+  "regulated_at": 0
+}

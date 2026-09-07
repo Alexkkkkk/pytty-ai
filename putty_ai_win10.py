@@ -51,6 +51,11 @@ try:
 except ImportError:
     selfev = None
 
+try:
+    import health_check as healthcheck
+except ImportError:
+    healthcheck = None
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QCheckBox, QPushButton,
@@ -160,11 +165,15 @@ class Terminal(QPlainTextEdit):
     def set_connected(self, flag: bool):
         self.connected = flag
         self.buffer = ""
+        if bootprof and flag:
+            bootprof.reset()   # новая сессия — сброс автоопределения загрузчика
 
     # ---- вывод от сервера ----
     def insert_remote(self, text: str):
         if bootprof:
             bootprof.feed(text)   # автоопределение загрузчика (Realtek/MediaTek/...)
+        if autofix:
+            autofix.note_output()
         self.moveCursor(QTextCursor.MoveOperation.End)
         self.insertPlainText(text)
         self.moveCursor(QTextCursor.MoveOperation.End)
@@ -196,6 +205,8 @@ class Terminal(QPlainTextEdit):
         self.sendText.emit(rest)
 
     def keyPressEvent(self, e):
+        if autofix:
+            autofix.note_user()
         key = e.key()
         mods = e.modifiers()
 
@@ -871,6 +882,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 self._evo = None
 
+        # --- самодиагностика при старте: «лучше часов» ---
+        if healthcheck:
+            try:
+                QTimer.singleShot(500, lambda: healthcheck.run_all(
+                    log=lambda m: self.ai_output.appendPlainText(m)))
+            except Exception:
+                pass
+
         # --- умное ожидание (expect), верификатор, рефлексия, лог сессии ---
         self._expecting = False
         self._expect_deadline = 0.0
@@ -1187,6 +1206,8 @@ class MainWindow(QMainWindow):
             self.ai_output.appendPlainText("[авто-чин: кейс записан в БД learned_cases.md]\n")
         except OSError:
             pass
+        if getattr(self, "_evo", None) and self._fixer:
+            self._evo.note_success(self._fixer.attempt)
 
     def _fixer_confirm(self, cmd):
         ret = QMessageBox.question(
@@ -1197,6 +1218,20 @@ class MainWindow(QMainWindow):
     def _fixer_tick(self):
         if autofix and self._fixer:
             self._fixer.tick()
+
+    # ---------- саморазвитие (self_evo) ----------
+    def _evo_apply_config(self, cfg):
+        if self._fixer and "idle_timeout" in cfg:
+            self._fixer.idle_timeout = cfg["idle_timeout"]
+        if autofix and "cooldown_scale" in cfg:
+            sc = cfg["cooldown_scale"]
+            autofix.COOLDOWN_STEPS[:] = [int(p * sc)
+                                         for p in (300, 900, 1800, 3600)]
+        self.ai_output.appendPlainText("[эво]: конфиг применён к живым объектам\n")
+
+    def _evo_tick(self):
+        if self._evo:
+            self._evo.tick()
 
     def _load_user_patches(self):
         """Загружает user_patches.py с валидацией (паттерн mue-x):

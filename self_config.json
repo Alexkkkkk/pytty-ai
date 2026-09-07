@@ -1,0 +1,8 @@
+{
+  "idle_timeout": 20,
+  "cooldown_scale": 1.0,
+  "min_cases_to_regulate": 5,
+  "auto_update": true,
+  "auto_deploy": false,
+  "update_interval_sec": 3600
+}

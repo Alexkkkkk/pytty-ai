@@ -229,6 +229,159 @@ def _ask_local(prompt, timeout=300):
     return rj["choices"][0]["message"].get("content") or ""
 
 
+GROQ_EXTRACTOR_SYSTEM = (
+    "Ты — экстрактор знаний с форумов по ремонту "
+    "электроники. Из ПРЕДЛОЖЕННОГО ТЕКСТА вытащи "
+    "пары 'ошибка/симптом -> решение'. Ответь "
+    "СТРОГО одним JSON-массивом, без пояснений, "
+    "без размышлений, без кавычек-шаблонов. "
+    "Пример правильного ответа для текста "
+    "'у клиента телевизор висит на логотипе, "
+    "помогла замена eMMC и прошивка с флешки': "
+    '[{"trigger":"телевизор висит на логотипе",'
+    '"solution":["заменить eMMC",'
+    '"прошить с флешки"],"note":"висит на логотипе"}]')
+
+
+def _groq_available():
+    return bool(_load_keys().get("groq_api_key") or AI_API_KEY)
+
+
+def _ask_groq(prompt, timeout=120, system=None):
+    """Вопрос к Groq сохранённым ключом (keys.json) или AI_API_KEY.
+    system=None — режим 'эксперт по теме', system=GROQ_EXTRACTOR_SYSTEM —
+    режим 'экстрактор пар из текста форума'."""
+    key = _load_keys().get("groq_api_key") or AI_API_KEY
+    if not key:
+        raise RuntimeError("ключ Groq не задан")
+    if system is None:
+        system = ("Ты — эксперт по ремонту телевизоров и приставок "
+                  "(eMMC/NAND/UART/u-boot/шасси). На заданную ТЕМУ "
+                  "составь справочник 'ошибка/симптом -> решение'. "
+                  "Ответь СТРОГО одним JSON-массивом, без пояснений: "
+                  '[{"trigger":"короткое описание симптома",'
+                  '"solution":["шаг 1","шаг 2"],"note":"модель/шасси"}]')
+        user = ("Тема: " + prompt +
+                "\n\nДай 3-7 пар 'симптом -> решение' по этой теме. "
+                "Только реальные практические решения мастеров.")
+    else:
+        user = ("Текст:\n" + prompt +
+                "\n\nОтветь JSON-массивом пар из этого текста.")
+    payload = {"model": GROQ_MODEL, "temperature": 0.2,
+               "messages": [{"role": "system", "content": system},
+                            {"role": "user", "content": user}],
+               "stream": False}
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Bearer " + key,
+                 "User-Agent": "pytty-ai-server"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        rj = json.loads(r.read().decode("utf-8", "replace"))
+    return rj["choices"][0]["message"].get("content") or ""
+
+
+# --- темы для обучения у Groq в простое ---
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+LEARN_GROQ = os.environ.get("LEARN_GROQ", "1") == "1"
+LEARN_GROQ_IDLE = int(os.environ.get("LEARN_GROQ_IDLE", "600"))
+GROQ_TOPICS = [
+    "телевизор висит на логотипе, прошивка eMMC через UART",
+    "u-boot ошибка Bad signature / не стартует загрузка",
+    "замена и прошивка NAND-флеш приставки",
+    "прошивка SPI-флеш программатором CH341A",
+    "бутloop: устройство перезагружается циклично",
+    "нет изображения, есть звук — подсветка T-con",
+    "ошибки eMMC в dmesg: mmc timeout, unrecognised ext_csd",
+    "восстановление через USB OTG / usb_super_upgrade_to_emmc",
+    "прошивка ТВ через флешку отформатированную в FAT32",
+    "замена процессора BGA после короткого замыкания",
+    "нет сети на Smart TV, сброс MAC-адреса",
+    "зависание Android-приставки на анимации загрузки",
+    "ошибка fastboot: заблокированный загрузчик",
+    "ADB: устройство offline, решение через драйверы",
+    "восстановление загрузчика через UART терминал",
+    "телевизор не выходит из дежурки, цепь питания",
+    "вздутые конденсаторы БП — диагностика и замена",
+    "прошивка через TFTP сервер в u-boot",
+    "ошибка 'rootfs is not ready' при загрузке",
+    "черный экран после обновления прошивки",
+    "диагностика SPI/I2C шлейфов осциллографом",
+    "логи UART: как искать причину зависания",
+    "перепайка eMMC с переносом данных",
+    "разблокировка загрузчика Amlogic",
+]
+GROQ_LEARN_STATE = {"seen": set(), "rounds": 0}
+
+
+def _groq_learner():
+    """В простое задаёт Groq темы и выучивает пары симптом->решение."""
+    import re as _re
+    import time as _t
+    _t.sleep(20)
+    while True:
+        try:
+            if not LEARN_GROQ:
+                _t.sleep(300)
+                continue
+            idle = (_t.time() - AI_ACT["last_ts"]) if AI_ACT["last_ts"] \
+                     else 9999
+            if AI_ACT["now"] > 0 or idle < LEARN_GROQ_IDLE:
+                _t.sleep(60)
+                continue
+            if not (_load_keys().get("groq_api_key") or AI_API_KEY):
+                _ev("🧠 обучение у Groq: ключ не задан — жду")
+                _t.sleep(600)
+                continue
+            todo = [t for t in GROQ_TOPICS if t not in
+                    GROQ_LEARN_STATE["seen"]]
+            if not todo:
+                GROQ_LEARN_STATE["seen"].clear()
+                GROQ_LEARN_STATE["rounds"] += 1
+                todo = list(GROQ_TOPICS)
+                _ev("🧠 обучение у Groq: новый круг №%d"
+                    % GROQ_LEARN_STATE["rounds"])
+            topic = todo[0]
+            _ev("🧠 спрашиваю Groq: %s" % topic)
+            raw = _ask_groq(topic)
+            m = _re.search(r"\[.*\]", raw, _re.S)
+            pairs = json.loads(m.group(0)) if m else []
+            added = _learn_merge(pairs, "groq:" + topic[:40])
+            for p in pairs[:3]:
+                if isinstance(p, dict) and p.get("trigger"):
+                    _learn_case("- [%s|groq] %s -> %s" % (
+                        _time.strftime("%Y-%m-%d"),
+                        str(p.get("trigger", "")).splitlines()[0][:60],
+                        "; ".join(str(c) for c in
+                                  p.get("solution", [])[:3])[:150]))
+            GROQ_LEARN_STATE["seen"].add(topic)
+            LEARN_STATE["done"] += 1
+            LEARN_STATE["last"] = "groq: " + topic[:60]
+            _ev("🧠 Groq ответил: +%d навыков (%s)"
+                % (added, topic[:50]))
+            _t.sleep(120)
+        except Exception as ex:
+            _ev("🧠 ошибка обучения у Groq: %s" % str(ex)[:120])
+            _t.sleep(300)
+        _t.sleep(30)
+
+
+if LEARN_GROQ:
+    threading.Thread(target=_groq_learner, daemon=True).start()
+
+
+def _learn_case(line):
+    """Добавить строку в общие случаи (learned_cases.md, синхронизируется
+    со всеми программами через /api/sync/cases)."""
+    try:
+        with open(os.path.join(DATA, "learned_cases.md"),
+                  "a", encoding="utf-8") as f:
+            f.write(line.rstrip() + "\n")
+    except OSError:
+        pass
+
+
 def _learn_merge(pairs, source_host):
     """Добавить выученные навыки в skills.json (дедуп по 1-й строке)."""
     if not isinstance(pairs, list):
@@ -270,7 +423,11 @@ def _learner():
     _t.sleep(360)
     while True:
         try:
-            if not LEARN or not _local_ready["ready"]:
+            if not LEARN:
+                _t.sleep(120)
+                continue
+            # учитель: Groq (если ключ задан) или локальная модель
+            if not (_groq_available() or _local_ready["ready"]):
                 _t.sleep(120)
                 continue
             idle = (_t.time() - AI_ACT["last_ts"]) if AI_ACT["last_ts"] \
@@ -304,13 +461,24 @@ def _learner():
             if len(text) < 600:
                 continue
             _ev("📚 учусь: %s" % url)
-            raw = _ask_local(text[:6000])
+            if _groq_available():
+                raw = _ask_groq(text[:6000],
+                                system=GROQ_EXTRACTOR_SYSTEM)
+            else:
+                raw = _ask_local(text[:6000])
             import re as _re
             m = _re.search(r"\[.*\]", raw, _re.S)
             pairs = json.loads(m.group(0)) if m else []
             added = _learn_merge(pairs, host)
             LEARN_STATE["done"] += 1
             LEARN_STATE["last"] = url
+            for p in (pairs if isinstance(pairs, list) else [])[:3]:
+                if isinstance(p, dict) and p.get("trigger"):
+                    _learn_case("- [%s|%s] %s -> %s" % (
+                        _time.strftime("%Y-%m-%d"), host,
+                        str(p.get("trigger", "")).splitlines()[0][:60],
+                        "; ".join(str(c) for c in
+                                  p.get("solution", [])[:3])[:150]))
             _ev("📚 выучил +%d навыков с %s" % (added, host))
             _t.sleep(20)
         except Exception as ex:

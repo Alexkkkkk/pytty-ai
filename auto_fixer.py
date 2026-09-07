@@ -85,29 +85,55 @@ def _looks_like_problem(text):
 # ---------- промпт для ИИ ----------
 _SYS = (
     "Ты — автоматический сервисный агент embedded-устройства (ТВ/приставка/роутер), "
-    "работающий через UART-консоль загрузчика. Проанализируй вывод терминала и "
-    "составь план исправления. Ответь СТРОГО одним JSON-объектом без markdown:\n"
+    "работающий через UART-консоль загрузчика. Твой принцип: ИСКАТЬ РЕШЕНИЕ, ПОКА НЕ "
+    "НАЙДЁШЬ — сдаваться запрещено. Проанализируй вывод терминала и составь план "
+    "исправления. Ответь СТРОГО одним JSON-объектом без markdown:\n"
     '{"problem":"краткое описание","steps":[{"cmd":"команда","expect":"фрагмент '
     'вывода подтверждающего успех","timeout_sec":8}],"summary":"что проверить в '
     'конце"}\n'
     "Правила: команды — ТОЛЬКО из разрешённого набора текущего профиля загрузчика; "
     "безопасные проверки (printenv, help, mmc part, read-only) — до любых записей; "
     "один шаг = одна команда; expect — короткий уникальный фрагмент; "
-    "если проблема неисправима через консоль — steps пустой, в summary объясни."
+    "если проблема неисправима через консоль — steps пустой, в summary объясни.\n"
+    "ПЕРСИСТЕНТНОСТЬ: ниже будет история неудачных попыток. КАТЕГОРИЧЕСКИ НЕ "
+    "ПОВТОРЯЙ команды, которые уже не сработали. Каждая новая попытка — ДРУГАЯ "
+    "гипотеза причины или ДРУГОЙ способ достичь того же результата. Сначала "
+    "разведка read-only-командами, потом минимально-разрушительное действие."
 )
 
 _USER_TMPL = (
     "[ТЕКУЩИЙ ВЫВОД ТЕРМИНАЛА]\n%s\n\n"
     "[ПРОФИЛЬ ЗАГРУЗЧИКА]\n%s\n\n"
-    "Предыдущие попытки не помогли: %s\n"
+    "Неудачные попытки (НЕ повторять их команды): %s\n\n"
+    "[СТРАТЕГИЯ ПОПЫТКИ №%d]\n%s\n\n"
     "Составь план исправления (JSON)."
 )
+
+# Ротация стратегий: каждая неудачная попытка переключает подход
+STRATEGIES = [
+    "Стандартное исправление: типовая причина, прямое решение.",
+    "Разведка: сначала 1-2 read-only команды (printenv, help, mmc part, bdinfo), "
+    "чтобы проверить гипотезу, потом действие.",
+    "Другая причина: если это ошибка загрузки — проверить переменные окружения, "
+    "bootargs, состояние разделов; если команда не найдена — поиск аналога в help.",
+    "Минимальное вмешательство: обойти проблему безопасным способом "
+    "(загрузка с RAM/альтернативного раздела, временный workaround).",
+    "Комбинация: применить успешные шаги из прошлых попыток + новое действие; "
+    "рассмотреть, что проблема аппаратная (питание, флеш, шлейф).",
+    "Радикальный, но обратимый шаг: перезагрузка после сброса env, повтор "
+    "операции с другими параметрами (1-bit вместо 4-bit, другой адрес).",
+    "Систематизация: выполнить серию диагностических команд и по их выводу "
+    "выбрать следующий шаг.",
+]
+
+# Нарастающие паузы между попытками (сек): 5, 15, 30, 60 минут, дальше 60
+COOLDOWN_STEPS = [300, 900, 1800, 3600]
 
 
 class AutoFixerCore:
     def __init__(self, llm_call, send_cmd, get_recent, is_connected,
                  log, append_kb, ask_confirm=None,
-                 idle_timeout=20, max_attempts=3, cooldown_sec=900):
+                 idle_timeout=20, max_attempts=0, cooldown_sec=900):
         self.llm_call = llm_call
         self.send_cmd = send_cmd
         self.get_recent = get_recent
@@ -118,6 +144,7 @@ class AutoFixerCore:
         self.idle_timeout = idle_timeout
         self.max_attempts = max_attempts
         self.cooldown_sec = cooldown_sec
+        self._cooldown_idx = 0         # позиция в COOLDOWN_STEPS
 
         self.state = "IDLE"            # IDLE ASKING RUNNING VERIFY COOLDOWN
         self.attempt = 0
@@ -158,11 +185,14 @@ class AutoFixerCore:
     # ---- спросить ИИ план ----
     def _ask(self):
         profile_hint = bootprof.prompt_hint() if bootprof else "(нет)"
-        prev = "; ".join(self.fail_history) if self.fail_history else "нет"
+        prev = "\n".join("- " + h for h in self.fail_history) if self.fail_history \
+            else "нет (первая попытка)"
+        strat = STRATEGIES[min(self.attempt, len(STRATEGIES) - 1)]
         msgs = [
             {"role": "system", "content": _SYS},
             {"role": "user", "content": _USER_TMPL % (
-                self.problem_text, profile_hint, prev)},
+                self.get_recent(), profile_hint, prev,
+                self.attempt + 1, strat)},
         ]
         self.state = "ASKING"
         self.log("[авто-чин]: анализирую проблему, запрашиваю план...\n")
@@ -171,8 +201,15 @@ class AutoFixerCore:
     def _on_plan(self, text):
         plan = self._parse_json(text)
         if not plan or not plan.get("steps"):
-            self._give_up("ИИ не дал исполняемых шагов: %s" %
-                          (plan and plan.get("summary")) or text[:200])
+            self.fail_history.append("план пуст: " +
+                                     ((plan and plan.get("summary")) or text[:200]))
+            self.attempt += 1
+            self.log("[авто-чин]: ИИ не дал исполняемых шагов, "
+                     "пробую другую стратегию.\n")
+            if self.max_attempts and self.attempt >= self.max_attempts:
+                self._rest()
+            else:
+                self._retry_or_rest()
             return
         self.steps = plan["steps"]
         self.step_idx = 0
@@ -223,10 +260,10 @@ class AutoFixerCore:
             self.log("[авто-чин]: шаг %d НЕ УДАЛСЯ (%s)\n" %
                      (self.step_idx + 1, why))
             self.attempt += 1
-            if self.attempt >= self.max_attempts:
-                self._give_up("исчерпаны попытки")
+            if self.max_attempts and self.attempt >= self.max_attempts:
+                self._rest()
             else:
-                self._ask()
+                self._retry_or_rest()
 
     # ---- верификация и запись в БД ----
     def _verify(self):
@@ -260,17 +297,28 @@ class AutoFixerCore:
             self.fail_history.append("верификация: " + text.strip()[:200])
             self.log("[авто-чин]: верификация: %s\n" % text.strip()[:200])
             self.attempt += 1
-            if self.attempt >= self.max_attempts:
-                self._give_up("верификация не пройдена")
+            if self.max_attempts and self.attempt >= self.max_attempts:
+                self._rest()
             else:
-                self._ask()
+                self._retry_or_rest()
 
     # ---- утилиты ----
-    def _give_up(self, why):
-        self.log("[авто-чин]: сдаюсь (%s). Пауза %d мин.\n" %
-                 (why, self.cooldown_sec // 60))
+    def _rest(self):
+        """Нарастающая пауза между попытками — НЕ отказ, поиск продолжится."""
+        pause = COOLDOWN_STEPS[min(self._cooldown_idx,
+                                   len(COOLDOWN_STEPS) - 1)]
+        self._cooldown_idx += 1
+        self.log("[авто-чин]: пауза %d мин — продолжу поиск с новой "
+                 "стратегией.\n" % (pause // 60))
         self.state = "COOLDOWN"
-        self.cooldown_until = time.time() + self.cooldown_sec
+        self.cooldown_until = time.time() + pause
+
+    def _retry_or_rest(self):
+        """Каждая 3-я неудача подряд — короткая пауза, чтобы не дёргать порт."""
+        if self.attempt > 0 and self.attempt % 3 == 0:
+            self._rest()
+        else:
+            self._ask()
 
     def _reset(self):
         self.state = "IDLE"
@@ -278,6 +326,7 @@ class AutoFixerCore:
         self.steps = []
         self.step_idx = 0
         self.fail_history = []
+        self._cooldown_idx = 0
 
     @staticmethod
     def _parse_json(text):

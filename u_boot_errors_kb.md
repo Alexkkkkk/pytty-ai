@@ -421,3 +421,116 @@ spi read / update через меню загрузчика; дамп SPI чит�
 3. panel_id в сервис-меню соответствует?
 4. Подсветка стартует? (ток, напряжение на LED-разъёме)
 5. Изображение фонариком есть? → тогда панель/шлейф; нет — main.
+
+---
+
+# Раздел 6. Полная шпаргалка консольных команд (UART/terminal)
+
+## 6.1 U-Boot: базовые команды (все платформы)
+
+```
+help                     список всех команд
+version                  версия загрузчика, дата сборки
+bdinfo                   инфо о плате: DRAM, MAC, серийник
+printenv                 все переменные окружения
+printenv VAR             одна переменная
+setenv VAR value         установить переменную (в памяти)
+saveenv                  сохранить env во флеш
+setenv VAR               удалить переменную
+reset                    перезагрузка
+echo $VAR                вывести переменную
+```
+**Перехват консоли:** сразу после включения жать Пробел / Esc / Enter
+(зависит от платформы), пока не появится `>>#`.
+
+## 6.2 U-Boot: память и файлы
+
+```
+mmc list                 список eMMC/SD
+mmc info                 инфо о текущей eMMC
+mmc dev 0                выбрать eMMC
+mmc read  addr blk cnt   читать блоки в память
+mmc write addr blk cnt   писать блоки из памяти
+fatls usb 0:1 /          список файлов на USB
+fatload usb 0:1 0x10000000 file.bin   загрузить файл в RAM
+fatwrite usb 0:1 0x10000000 file.bin size  записать на USB
+sf probe 0               подключить SPI-флеш
+sf read addr offset size  читать SPI
+sf write addr offset size писать SPI
+sf erase offset size     стереть SPI (ОПАСНО!)
+nand info / nand erase.chip  NAND (ОПАСНО!)
+mw.l addr value count    записать 32-битные слова в RAM
+md.l addr count          вывести память (дамп)
+cmp.b addr1 addr2 len    сравнить области памяти
+```
+## 6.3 U-Boot: сеть
+
+```
+setenv ipaddr 192.168.1.10
+setenv serverip 192.168.1.5
+ping 192.168.1.5
+tftpboot 0x10000000 file.bin   скачать с TFTP-сервера
+bootm addr               запустить образ uImage
+booti addr               запустить образ Image (ARM64)
+go addr                  запустить код по адресу
+```
+## 6.4 MStar/SigmaStar (шасси MSD/MSO, TP.MS*)
+
+```
+usb stop; usb start      переинициализация USB
+usb tree / usb part      диагностика флешки
+fatls usb 0:1 /
+usb_super_upgrade_to_emmc   ПОЛНАЯ прошивка eMMC с USB
+usb_partial_upgrade_to_emmc частичная (kernel+rootfs)
+ustar                    обновление по сценарию (upgrade_image.pkg)
+usb_bin_check            проверка бинарника на USB
+mmcboot / boot           загрузка по bootcmd
+avbab dump               состояние AVB-слотов
+avbab set_active 0/1     выбрать слот A/B
+ac / bootargs_set        правка параметров загрузки
+```
+## 6.5 Amlogic
+
+```
+run update               обновление из U-Boot
+aml_burn / update        режим burning (с PC: USB Burning Tool)
+fastboot                 вход в fastboot
+```
+## 6.6 Linux на ТВ: shell-команды
+
+```
+cat /proc/cmdline        параметры загрузки
+cat /proc/device-tree/model   модель платы!
+dmesg | head -50         лог загрузки
+dmesg | grep -i error    ошибки
+fw_printenv              env как в U-Boot
+fw_setenv VAR value      изменить env
+dd if=/dev/mmcblk0 of=/mnt/usb/dump.bin bs=1M  слить eMMC
+dd if=/mnt/usb/image.bin of=/dev/mmcblk0 bs=1M залить eMMC
+cat /sys/class/graphics/fb0/...  инфо о панели
+reboot recovery          перезагрузка в recovery
+```
+## 6.7 ADB (Android TV)
+
+```
+adb devices              список устройств
+adb shell                консоль ТВ
+adb reboot recovery      в рекавери
+adb reboot bootloader    в загрузчик
+adb push file /data/     закачать файл
+adb pull /data/file .    скачать файл
+adb logcat               лог системы
+adb connect IP:5555      по Wi-Fi
+```
+## 6.8 Диагностические связки (одной строкой)
+
+```
+dmesg | grep -iE 'error|fail|bad'
+lsusb; cat /proc/partitions
+fw_printenv | grep -i panel
+i2cdetect -y 0           шина I2C
+```
+## 6.9 Запрещённые в агенте (но полезные вручную)
+
+`mmc erase`, `nand erase.chip`, `sf erase` — стирают флеш.
+Программа блокирует их для ИИ; человеку — только осознанно.

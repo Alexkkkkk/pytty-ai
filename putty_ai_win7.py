@@ -985,14 +985,26 @@ class MainWindow(QMainWindow):
         return {}
 
     def _save_config(self):
-        """Сохраняет настройки ИИ и параметры подключения в config.json."""
+        """Надёжно сохраняет настройки в пользовательский config.json."""
+        path = os.path.join(self._base_dir, "config.json")
+        tmp = path + ".tmp"
         try:
-            path = os.path.join(self._base_dir, "config.json")
-            with open(path, "w", encoding="utf-8") as f:
+            os.makedirs(self._base_dir, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"settings": self.settings, "conn": self._conn},
                           f, ensure_ascii=False, indent=1)
-        except OSError:
-            pass
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            return path
+        except OSError as ex:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            if hasattr(self, "ai_output"):
+                self.ai_output.appendPlainText("[ошибка сохранения настроек: %s]\n" % ex)
+            return ""
 
     def _load_kb(self):
         """Загружает базу знаний (папка пользователя, рядом с exe, в exe)."""

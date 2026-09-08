@@ -20,6 +20,12 @@ def test_health():
     assert r.json() == {"status": "ok"}
 
 
+def test_diagnostics_require_token():
+    assert client.get("/api/stats").status_code == 403
+    assert client.get("/api/events").status_code == 403
+    assert client.get("/api/keys").status_code == 403
+
+
 def test_get_sync_public():
     r = client.get("/api/sync/skills")
     assert r.status_code == 200

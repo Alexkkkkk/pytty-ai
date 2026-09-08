@@ -24,6 +24,7 @@ URL: https://terminalai.bothost.tech/v1
 Ключ: <SYNC_TOKEN>
 """
 
+import hmac
 import json
 import os
 import shutil
@@ -571,11 +572,14 @@ def _effective_token():
                 return t
     except OSError:
         pass
-    return "putty-ai-2026"
+    return ""
 
 
 def _check_token(x_token: Optional[str]):
-    if x_token != _effective_token():
+    token = _effective_token()
+    if not token:
+        raise HTTPException(status_code=503, detail="server token is not configured")
+    if not hmac.compare_digest(str(x_token or ""), token):
         raise HTTPException(status_code=403, detail="bad token")
 
 
@@ -667,15 +671,20 @@ def _key_hint(v):
     return v[:4] + "…" + v[-4:]
 
 
-@app.get("/api/keys")
-def keys_status():
-    """Статус ключей — факт наличия + маскированная подсказка,
-    полные ключи в API не отдаются."""
+def _keys_status_payload():
+    """Статус ключей без выдачи самих секретов."""
     k = _load_keys()
     return {"groq": bool(k.get("groq_api_key")),
             "github": bool(k.get("github_token")),
             "groq_hint": _key_hint(k.get("groq_api_key")),
             "github_hint": _key_hint(k.get("github_token"))}
+
+
+@app.get("/api/keys")
+def keys_status(x_token: Optional[str] = Header(None)):
+    """Статус ключей — только для авторизованной панели."""
+    _check_token(x_token)
+    return _keys_status_payload()
 
 
 @app.put("/api/keys")
@@ -695,7 +704,7 @@ async def keys_put(request: Request, x_token: Optional[str] = Header(None)):
     STATS["puts"] += 1
     _ev("KEYS updated: groq=%s github=%s" %
         (bool(k.get("groq_api_key")), bool(k.get("github_token"))))
-    return {"ok": True, **keys_status()}
+    return {"ok": True, **_keys_status_payload()}
 
 
 @app.post("/api/keys/test")
@@ -943,7 +952,8 @@ def _relay_target():
 
 
 @app.get("/api/local_model")
-def local_model_status():
+def local_model_status(x_token: Optional[str] = Header(None)):
+    _check_token(x_token)
     ollama_url = ("http://127.0.0.1:%d/v1" % OLLAMA_PORT
                   if OLLAMA_MODEL else None)
     return {"status": dict(MODEL_STATUS),
@@ -1241,7 +1251,7 @@ a{color:#58a6ff}
 <div class="chat">
 <h3 style="color:#9fd0ff;margin-top:0">💬 Спросить ИИ</h3>
 <div class="chat-cfg">
-<input id="chat-token" type="password" value="putty-ai-2026" placeholder="пароль (X-Token)">
+<input id="chat-token" type="password" placeholder="пароль (X-Token)">
 <input id="chat-model" placeholder="модель" style="width:220px">
 </div>
 <div id="chat-log"></div>
@@ -1253,6 +1263,10 @@ a{color:#58a6ff}
 <p class="small">Обновление каждые 15 секунд · API: <a href="/log">живой лог</a> · <a href="/docs">/docs</a> · синхронизация: <code>/api/sync/*</code></p>
 </div>
 <script>
+function adminHeaders(){
+  const tk = document.getElementById('chat-token').value.trim();
+  return tk ? {'X-Token': tk} : {};
+}
 function setKeyBadge(kind, text, cls){
   const el = document.getElementById('st-' + kind);
   el.textContent = text;
@@ -1260,7 +1274,7 @@ function setKeyBadge(kind, text, cls){
 }
 async function loadKeysStatus(){
   try{
-    const r = await fetch('/api/keys'); const d = await r.json();
+    const r = await fetch('/api/keys', {headers: adminHeaders()}); const d = await r.json();
     for (const k of ['groq','github']){
       if (d[k]){
         setKeyBadge(k, (d[k + '_hint'] || 'задан'), 'b-green');
@@ -1348,7 +1362,7 @@ async function selfUpdate(){
 async function load(){
   loadKeysStatus();
   try{
-    const r = await fetch('/api/stats'); const d = await r.json();
+    const r = await fetch('/api/stats', {headers: adminHeaders()}); const d = await r.json();
     document.getElementById('c-skills').textContent = d.skills;
     document.getElementById('c-cases').textContent = d.cases;
     document.getElementById('c-danger').textContent = d.dangerous + d.risky;
@@ -1508,7 +1522,8 @@ load(); setInterval(load, 15000);
 
 
 @app.get("/api/stats")
-def api_stats():
+def api_stats(x_token: Optional[str] = Header(None)):
+    _check_token(x_token)
     skills = _read_json("skills.json", [])
     rules = _read_json("learned_rules.json", {"dangerous": [], "risky": []})
     cases = _read_text("learned_cases.md")
@@ -1573,7 +1588,8 @@ def _mem_mb():
 
 
 @app.get("/api/events")
-def api_events():
+def api_events(x_token: Optional[str] = Header(None)):
+    _check_token(x_token)
     idle_s = None
     if AI_ACT["last_ts"]:
         idle_s = int(_time.time() - AI_ACT["last_ts"])
@@ -1610,6 +1626,7 @@ a{color:#58a6ff;text-decoration:none;margin-left:auto}
 @keyframes bl{50%{opacity:.3}}
 </style></head><body>
 <header><span class="dot"></span><b>Живой лог сервера</b>
+<input id="token" type="password" placeholder="X-Token" autocomplete="off" style="margin-left:12px;max-width:190px">
 <button id="pause" onclick="togglePause()">⏸ пауза</button>
 <button onclick="document.getElementById('log').innerHTML=''">🧹 очистить</button>
 <button id="sec" onclick="toggleSec()">⏱ каждую секунду: ВЫКЛ</button>
@@ -1619,6 +1636,10 @@ a{color:#58a6ff;text-decoration:none;margin-left:auto}
 <div id="log"></div>
 <script>
 let n = 0, paused = false;
+function authHeaders(){
+  const tk = document.getElementById('token').value.trim();
+  return tk ? {'X-Token': tk} : {};
+}
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 function cls(line){
   if(line.indexOf(' -> 5') > -1 || line.indexOf(' -> 4') > -1) return 'err';
@@ -1630,7 +1651,7 @@ function cls(line){
 async function tick(){
   if(paused) return;
   try{
-    const r = await fetch('/api/events'); const d = await r.json();
+    const r = await fetch('/api/events', {headers: authHeaders()}); const d = await r.json();
     const evs = d.events || [];
     const start = Math.max(0, evs.length - (d.n - n));
     for(let i = start; i < evs.length; i++){
@@ -1653,7 +1674,7 @@ function togglePause(){ paused = !paused; document.getElementById('pause').textC
 let secOn = false, secTimer = null, lastSec = '';
 async function secTick(){
   try{
-    const r = await fetch('/api/events'); const d = await r.json();
+    const r = await fetch('/api/events', {headers: authHeaders()}); const d = await r.json();
     let state;
     if(d.ai_now > 0) state = '⚡ ОТВЕЧАЕТ (одновременно: ' + d.ai_now + ')';
     else if(d.idle_s == null) state = '💤 обращений ещё не было';

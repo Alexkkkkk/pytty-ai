@@ -2234,6 +2234,30 @@ class MainWindow(QMainWindow):
                     self.extra_rules[lvl].append(p)
                     n += 1
         return n
+    def _merge_models(self, remote):
+        """Сливает реестр моделей ТВ без дублей."""
+        if not isinstance(remote, list):
+            return 0
+        known = {(str(m.get("board", "")).strip(),
+                  str(m.get("brand", "")).strip(),
+                  str(m.get("model", "")).strip())
+                 for m in self.models if isinstance(m, dict)}
+        added = 0
+        for m in remote:
+            if not isinstance(m, dict) or not str(m.get("model", "")).strip():
+                continue
+            item = {"board": str(m.get("board", "")).strip(),
+                    "brand": str(m.get("brand", "")).strip(),
+                    "model": str(m.get("model", "")).strip()}
+            key = (item["board"], item["brand"], item["model"])
+            if key not in known:
+                self.models.append(item)
+                known.add(key)
+                added += 1
+        if added:
+            self._model_refresh()
+        return added
+
 
     def _merge_cases(self, remote_text):
         """Дописываем случаи, которых ещё нет (дедуп по сигнатуре строки)."""
@@ -2274,17 +2298,20 @@ class MainWindow(QMainWindow):
             base = "https://raw.githubusercontent.com/%s/main/" % repo
             rs = json.loads(self._http_get(base + "skills.json").decode("utf-8"))
             rr = json.loads(self._http_get(base + "learned_rules.json").decode("utf-8"))
+            rm = json.loads(self._http_get(base + "models.json").decode("utf-8"))
             rc = self._http_get(base + "learned_cases.md").decode("utf-8")
             a, u = self._merge_skills(rs)
             nr = self._merge_rules(rr)
+            nm = self._merge_models(rm)
             nc = self._merge_cases(rc)
             _save_json(os.path.join(self._base_dir, "skills.json"), self.skills)
             _save_json(os.path.join(self._base_dir, "learned_rules.json"),
                        self.extra_rules)
+            _save_json(os.path.join(self._base_dir, "models.json"), self.models)
             self.kb_text = self._load_kb()
             self._curriculum_update()
             msg = ("✔ база синхронизирована: +%d навыков (обновлено %d), "
-                   "+%d правил, +%d случаев" % (a, u, nr, nc))
+                   "+%d правил, +%d моделей, +%d случаев" % (a, u, nr, nm, nc))
             self.sync_status.setText(msg)
             self.ai_output.appendPlainText("— " + msg + "\n")
             self._save_config()
@@ -2302,18 +2329,21 @@ class MainWindow(QMainWindow):
                             .decode("utf-8"))
             rr = json.loads(self._http_get(base + "/api/sync/rules")
                             .decode("utf-8"))
+            rm = json.loads(self._http_get(base + "/api/sync/models").decode("utf-8"))
             rc = self._http_get(base + "/api/sync/cases").decode("utf-8")
             a, u = self._merge_skills(rs)
             nr = self._merge_rules(rr)
+            nm = self._merge_models(rm)
             nc = self._merge_cases(rc)
             _save_json(os.path.join(self._base_dir, "skills.json"),
                        self.skills)
             _save_json(os.path.join(self._base_dir, "learned_rules.json"),
                        self.extra_rules)
+            _save_json(os.path.join(self._base_dir, "models.json"), self.models)
             self.kb_text = self._load_kb()
             self._curriculum_update()
-            msg = ("✔ с сервера: +%d навыков (обн. %d), +%d правил, "
-                   "+%d случаев" % (a, u, nr, nc))
+            msg = ("✔ с сервера: +%d навыков (обн. %d), +%d правил, +%d моделей, "
+                   "+%d случаев" % (a, u, nr, nm, nc))
             self.sync_status.setText(msg)
             self.ai_output.appendPlainText("— " + msg + "\n")
             self._save_config()
@@ -2330,6 +2360,7 @@ class MainWindow(QMainWindow):
         self.sync_status.setText("отправка на сервер…")
         mapping = (("skills.json", "skills"),
                    ("learned_rules.json", "rules"),
+                   ("models.json", "models"),
                    ("learned_cases.md", "cases"))
         try:
             for fname, api_name in mapping:
@@ -2965,7 +2996,7 @@ class MainWindow(QMainWindow):
         self.srv_url = QLineEdit(self.settings.get(
             "srv_url", "https://terminalai.bothost.tech"))
         self.srv_token = QLineEdit(self.settings.get(
-            "srv_token", "putty-ai-2026"))
+            "srv_token", ""))
         self.srv_token.setEchoMode(QLineEdit.EchoMode.Password)
         btn_srv_dl = QPushButton("С сервера")
         btn_srv_dl.clicked.connect(self._srv_download)

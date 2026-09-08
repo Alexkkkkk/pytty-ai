@@ -284,7 +284,7 @@ def _ask_groq(prompt, timeout=120, system=None):
 
 # --- темы для обучения у Groq в простое ---
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-LEARN_GROQ = os.environ.get("LEARN_GROQ", "1") == "1"
+LEARN_GROQ = os.environ.get("LEARN_GROQ", "0") == "1"
 LEARN_GROQ_IDLE = int(os.environ.get("LEARN_GROQ_IDLE", "600"))
 GROQ_TOPICS = [
     "телевизор висит на логотипе, прошивка eMMC через UART",
@@ -932,7 +932,7 @@ if OLLAMA_MODEL and not LOCAL_UPSTREAM:
 
 def _relay_target():
     """Цепочка: Groq/OpenAI -> Ollama (LOCAL_UPSTREAM) -> llamafile."""
-    key = AI_API_KEY or _read_text("ai_key.txt").strip()
+    key = _load_keys().get("groq_api_key") or AI_API_KEY or _read_text("ai_key.txt").strip()
     if key:
         return AI_UPSTREAM, key
     if LLAMAFILE_URL and _local_ready["ready"]:

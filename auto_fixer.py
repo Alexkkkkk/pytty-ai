@@ -56,7 +56,8 @@ _PROBLEM_PATTERNS = [
     r"error", r"fail", r"panic", r"exception", r"unknown command",
     r"not found", r"denied", r"invalid", r"corrupt", r"bad signature",
     r"bootloop", r"watchdog", r"assert", r"cannot", r"timeout",
-    r"no such file", r"permission", r"refused", r"unreachable",
+    r"no such file", r"no such (device|partition)",
+    r"permission", r"refused", r"unreachable",
     r"0x[0-9a-f]{8}.*abort", r"data abort", r"prefetch abort",
     r"kernel panic", r"init:.*critical",
 ]

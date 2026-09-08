@@ -3,7 +3,7 @@
 # Сборка:  python -m PyInstaller --clean --noconfirm PuTTY-AI.spec
 
 a = Analysis(
-    ['putty_ai.py'],
+    ['putty_ai_win10.py'],
     pathex=[],
     binaries=[],
     datas=[

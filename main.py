@@ -1536,7 +1536,7 @@ def api_stats(x_token: Optional[str] = Header(None)):
         "skills_data": skills[-100:],
         "rules": rules,
         "level": _learning_level(skills, cases.count("## Удачный случай")),
-        "local_model": local_model_status(),
+        "local_model": local_model_status(x_token),
         "model_status": dict(MODEL_STATUS),
         "ai_activity": dict(AI_ACT),
         "ai_log": _ai_log_summary(),

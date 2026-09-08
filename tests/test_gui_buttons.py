@@ -464,6 +464,29 @@ def test_ai_settings_dialog_buttons(win):
     assert d2.result() == AiSettingsDialog.DialogCode.Rejected
 
 
+def test_ai_settings_repair_legacy_token_in_base_url():
+    """Старый config не должен собирать URL из значения токена."""
+    legacy_token = "redacted-sync-token"
+    settings, changed = app_mod._normalise_ai_settings({
+        "base_url": legacy_token,
+        "api_key": "",
+        "model": "",
+    })
+    assert changed
+    assert settings["base_url"] == app_mod.DEFAULT_AI_BASE_URL
+    assert settings["api_key"] == legacy_token
+    assert settings["model"] == app_mod.DEFAULT_AI_MODEL
+
+
+def test_terminalai_provider_preset():
+    d = AiSettingsDialog({"base_url": "", "api_key": "", "model": ""})
+    idx = d.provider.findText("TerminalAI (сервер мастерской)")
+    assert idx > 0
+    d.provider.setCurrentIndex(idx)
+    assert d.base.text() == app_mod.DEFAULT_AI_BASE_URL
+    assert d.model.text() == app_mod.DEFAULT_AI_MODEL
+
+
 def test_action_dialog_buttons():
     qapp()
     d = ActionDialog(["reboot", "printenv"])

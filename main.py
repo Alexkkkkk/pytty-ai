@@ -808,11 +808,9 @@ async def self_update(x_token: Optional[str] = Header(None)):
             pass
     _ev("SELF-UPDATE: код заменён (%d B), перезапуск" % len(new_code))
     try:
-        argv0 = sys.argv[0]
-        if os.sep in argv0 or (os.altsep and os.altsep in argv0):
-            os.execv(argv0, sys.argv)
-        else:
-            os.execvp(argv0, sys.argv)
+        # В Docker sys.argv[0] обычно равен относительному "main.py",
+        # которого нет в PATH. Перезапускаем тем же интерпретатором.
+        os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception as e:
         _ev("SELF-UPDATE restart failed: %s" % str(e)[:120])
         return {"ok": True, "restarted": False,

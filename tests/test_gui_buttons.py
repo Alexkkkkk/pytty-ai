@@ -482,3 +482,35 @@ def test_analysis_dialog_copy():
     copy = [b for b in d.findChildren(QPushButton) if "Копировать" in b.text()][0]
     click(copy)
     assert "ОШИБКИ" in QApplication.clipboard().text()
+
+
+# ---------------------------------------------------------------- регрессии
+
+def test_save_config_persists_settings(win, monkeypatch):
+    """Баг: дубль _save_config глушил автосохранение настроек."""
+    w, _ = win
+    monkeypatch.setattr(app_mod.QTimer, "singleShot", lambda *a, **k: None)
+    w.settings["model"] = "regression-test-model"
+    w._save_config()
+    cfg = json.load(open(os.path.join(w._base_dir, "config.json"), encoding="utf-8"))
+    assert cfg["settings"]["model"] == "regression-test-model"
+
+
+def test_fixer_append_kb_uses_data_dir(win):
+    """Баг: learned_cases.md писался в cwd вместо папки данных."""
+    w, _ = win
+    w._fixer_append_kb("\nregression-test-case\n")
+    kb = os.path.join(w._base_dir, "learned_cases.md")
+    assert "regression-test-case" in open(kb, encoding="utf-8").read()
+
+
+def test_download_config_arms_device_dumper(win, monkeypatch):
+    """Баг: таймер «Скачать конфиг» звал не тот метод."""
+    w, _ = win
+    sent = fake_ssh(w, monkeypatch)
+    w._type_command = lambda c: sent.append(c)
+    armed = {}
+    monkeypatch.setattr(app_mod.QTimer, "singleShot",
+                        lambda ms, fn: armed.update(ms=ms, fn=fn))
+    click(find_button(w, "Скачать конфиг"))
+    assert armed.get("fn") == w._save_device_config

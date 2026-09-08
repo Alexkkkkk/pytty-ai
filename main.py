@@ -522,9 +522,6 @@ import time as _time
 STATS = {"puts": 0, "gets": 0, "start": _time.time()}
 
 HIST_PATH = os.path.join(DATA, "stats_history.json")
-HIST = _read_json(HIST_PATH, {}) if False else None  # заглушка до определения
-
-
 def _bump_daily(key):
     """+1 к сегодняшнему счётчику и сохранение истории."""
     day = _time.strftime("%Y-%m-%d")

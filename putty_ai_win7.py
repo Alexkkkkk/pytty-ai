@@ -1201,7 +1201,8 @@ class MainWindow(QMainWindow):
 
     def _fixer_append_kb(self, text):
         try:
-            with open("learned_cases.md", "a", encoding="utf-8") as f:
+            path = os.path.join(self._base_dir, "learned_cases.md")
+            with open(path, "a", encoding="utf-8") as f:
                 f.write(text)
             self.ai_output.appendPlainText("[авто-чин: кейс записан в БД learned_cases.md]\n")
         except OSError:
@@ -2012,7 +2013,7 @@ class MainWindow(QMainWindow):
         self.ai_output.appendPlainText("💾 скачиваю конфиг…\n")
         self._cfg_profile = profile
         self._type_command(cmd)
-        QTimer.singleShot(4000, self._save_config)
+        QTimer.singleShot(4000, self._save_device_config)
 
     def _save_config(self):
         import re as _re

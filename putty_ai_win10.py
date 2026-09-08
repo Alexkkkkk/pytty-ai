@@ -25,6 +25,7 @@ import subprocess
 import datetime
 import importlib.util
 import urllib.request
+from urllib.parse import urlparse
 
 try:
     import paramiko
@@ -88,6 +89,56 @@ def _save_json(path, data):
 
 
 APP_VERSION = "1.0.0"
+DEFAULT_AI_BASE_URL = "https://terminalai.bothost.tech/v1"
+DEFAULT_AI_MODEL = "openai/gpt-oss-120b"
+
+
+def _is_valid_ai_url(value):
+    """Проверяет, что значение похоже на HTTP(S) base URL, а не на ключ."""
+    try:
+        parsed = urlparse(str(value).strip())
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalise_ai_settings(raw):
+    """Возвращает настройки ИИ и чинит старый config.json.
+
+    В ранних конфигурациях токен иногда оказывался в base_url. Не выводим
+    это значение: если URL невалиден и отдельный ключ пуст, переносим его
+    в api_key и возвращаем штатный URL TerminalAI.
+    """
+    defaults = {
+        "base_url": DEFAULT_AI_BASE_URL,
+        "api_key": "",
+        "model": DEFAULT_AI_MODEL,
+    }
+    settings = defaults.copy()
+    if isinstance(raw, dict):
+        settings.update(raw)
+
+    base_url = str(settings.get("base_url") or "").strip()
+    api_key = str(settings.get("api_key") or "").strip()
+    model = str(settings.get("model") or "").strip()
+    changed = False
+
+    if base_url and not _is_valid_ai_url(base_url):
+        if not api_key:
+            settings["api_key"] = base_url
+        settings["base_url"] = DEFAULT_AI_BASE_URL
+        changed = True
+    elif not base_url:
+        settings["base_url"] = DEFAULT_AI_BASE_URL
+        changed = True
+
+    if not model:
+        settings["model"] = DEFAULT_AI_MODEL
+        changed = True
+    if settings.get("api_key") != api_key and api_key:
+        settings["api_key"] = api_key
+        changed = True
+    return settings, changed
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +449,10 @@ class AiWorker(QThread):
         self.messages = messages
 
     def _attempt(self, base_url, api_key, model):
+        base_url = str(base_url or "").strip()
+        if not _is_valid_ai_url(base_url):
+            raise ValueError("Некорректный API URL: укажите полный URL "
+                             "вида https://host/v1")
         payload = {"model": model, "messages": self.messages,
                    "temperature": 0.2, "stream": False}
         headers = {"Content-Type": "application/json"}
@@ -547,6 +602,8 @@ PROVIDERS = [
     ("llamafile (1 файл, офлайн, работает без установки)",
      "http://localhost:8080/v1", "llamafile"),
     ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+    ("TerminalAI (сервер мастерской)",
+     DEFAULT_AI_BASE_URL, DEFAULT_AI_MODEL),
     ("Свой сервер (OpenAI-совместимый)", None, None),
 ]
 
@@ -642,10 +699,10 @@ class AiSettingsDialog(QDialog):
         lay.addRow("Провайдер:", self.provider)
         self.provider.currentIndexChanged.connect(self._apply_preset)
 
-        self.base = QLineEdit(settings["base_url"])
+        self.base = QLineEdit(settings.get("base_url", DEFAULT_AI_BASE_URL))
         self.key = QLineEdit(settings.get("api_key", ""))
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.model = QLineEdit(settings["model"])
+        self.model = QLineEdit(settings.get("model", DEFAULT_AI_MODEL))
 
         lay.addRow("API URL:", self.base)
         lay.addRow("API-ключ:", self.key)
@@ -667,6 +724,7 @@ class AiSettingsDialog(QDialog):
         lay.addRow("llamafile.exe:", row_lf)
         lay.addRow(QLabel(
             "Ollama (Win10+): http://localhost:11434/v1, ключ пустой.\n"
+            "TerminalAI: https://terminalai.bothost.tech/v1 + SYNC_TOKEN.\n"
             "Groq: ключ с https://console.groq.com/keys (регистрация бесплатно).\n"
             "  Модели Groq: openai/gpt-oss-120b (умная),\n"
             "  llama-3.1-8b-instant (самая быстрая), qwen-qwq-32b (рассуждения).\n"
@@ -696,6 +754,22 @@ class AiSettingsDialog(QDialog):
             self.base.setText(url)
         if model:
             self.model.setText(model)
+
+    def accept(self):
+        if not _is_valid_ai_url(self.base.text()):
+            QMessageBox.warning(
+                self, "Настройки ИИ",
+                "API URL должен быть полным HTTP(S)-адресом, например:\n"
+                "https://terminalai.bothost.tech/v1\n\n"
+                "Токен укажите только в поле «API-ключ».")
+            self.base.setFocus()
+            return
+        if not self.model.text().strip():
+            QMessageBox.warning(self, "Настройки ИИ",
+                                "Укажите модель ИИ.")
+            self.model.setFocus()
+            return
+        super().accept()
 
 
 def _cosine(a, b):
@@ -826,11 +900,9 @@ class MainWindow(QMainWindow):
 
         # --- настройки: из config.json (если есть) или по умолчанию ---
         self.config = self._load_config()
-        self.settings = self.config.get("settings", {
-            "base_url": "http://localhost:11434/v1",   # Ollama по умолчанию
-            "api_key": "",
-            "model": "qwen2.5-coder",
-        })
+        self.settings, settings_changed = _normalise_ai_settings(
+            self.config.get("settings", {}))
+        self._settings_changed = settings_changed
         self._conn = self.config.get("conn", {})
 
         # --- самообучение: навыки, правила, самопереписываемый код ---
@@ -933,6 +1005,9 @@ class MainWindow(QMainWindow):
         # --- панель ИИ ---
         self._build_ai_panel()
         self._build_toolbar()
+        if self._settings_changed:
+            self._save_config()
+            self._settings_changed = False
 
     def _data_dir(self):
         """Папка данных пользователя: %APPDATA%\\PuTTY-AI на Windows

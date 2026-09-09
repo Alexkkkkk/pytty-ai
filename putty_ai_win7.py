@@ -462,8 +462,13 @@ class AiWorker(QThread):
             base_url.rstrip("/") + "/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers=headers)
-        with urllib.request.urlopen(req, timeout=90) as r:
-            resp = json.loads(r.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                resp = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as ex:
+            detail = ex.read().decode("utf-8", "replace")[:300]
+            raise RuntimeError("AI-сервер HTTP %d: %s" %
+                               (ex.code, detail or ex.reason))
         return resp["choices"][0]["message"]["content"].strip()
 
     def run(self):

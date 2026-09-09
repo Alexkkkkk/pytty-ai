@@ -26,6 +26,28 @@ def test_diagnostics_require_token():
     assert client.get("/api/keys").status_code == 403
 
 
+def test_events_return_monotonic_ids():
+    main._ev("test event")
+    r = client.get("/api/events", headers=HEADERS)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["events"]
+    ids = [event["id"] for event in data["events"]]
+    assert ids == sorted(ids)
+    assert data["seq"] >= ids[-1]
+    assert data["first_seq"] == ids[0]
+
+
+def test_bearer_auth_is_accepted_by_openai_routes():
+    headers = {"Authorization": "Bearer test-token-123"}
+    r = client.post("/v1/chat/completions", headers=headers, json={
+        "model": "test", "messages": [{"role": "user", "content": "ping"}]
+    })
+    assert r.status_code == 503
+    r = client.get("/v1/models", headers=headers)
+    assert r.status_code == 503
+
+
 def test_get_sync_public():
     r = client.get("/api/sync/skills")
     assert r.status_code == 200
@@ -50,6 +72,13 @@ def test_put_and_get_roundtrip():
 def test_put_bad_json_rejected():
     r = client.put("/api/sync/skills", data="not json{{", headers=HEADERS)
     assert r.status_code == 400
+
+
+def test_key_and_token_endpoints_reject_bad_json():
+    assert client.put("/api/keys", data="not json{{",
+                      headers=HEADERS).status_code == 400
+    assert client.post("/api/token", data="not json{{",
+                       headers=HEADERS).status_code == 400
 
 
 def test_unknown_file_404():

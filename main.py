@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time as _time
 import urllib.request
 from typing import Optional
 
@@ -83,23 +84,36 @@ AI_LOG = []   # журнал запросов: [{t, q, m}]
 AI_LOAD = {}  # нагрузка по минутам: {"HH:MM": {n, ms_sum, ms_max}}
 EVENTS = []   # живой лог: [{t, m}]
 AI_DET = []   # супер-лог ИИ: [{t, model, q, a, ms, ptok, ctok, err}]
+EVENT_SEQ = 0
+EVENT_LOCK = threading.Lock()
 
 
 def _ev(msg):
-    EVENTS.append({"t": _time.strftime("%H:%M:%S"), "m": str(msg)[:200]})
-    if len(EVENTS) > 400:
-        del EVENTS[:-300]
+    global EVENT_SEQ
+    with EVENT_LOCK:
+        EVENT_SEQ += 1
+        EVENTS.append({"id": EVENT_SEQ,
+                       "t": _time.strftime("%H:%M:%S"),
+                       "m": str(msg)[:200]})
+        if len(EVENTS) > 400:
+            del EVENTS[:-300]
 
 
 @app.middleware("http")
 async def _log_middleware(request, call_next):
     t0 = _time.monotonic()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as ex:
+        _ev("%s %s -> 500 (%dms): %s" %
+            (request.method, request.url.path,
+             int((_time.monotonic() - t0) * 1000), str(ex)[:120]))
+        raise
     if request.url.path not in ("/api/events", "/api/stats",
-                            "/favicon.ico", "/favicon.svg"):
-        _ev("%s %s -> %s (%dms)" % (request.method, request.url.path,
-                                    response.status_code,
-                                    int((_time.monotonic() - t0) * 1000)))
+                                "/favicon.ico", "/favicon.svg"):
+        _ev("%s %s -> %s (%dms)" %
+            (request.method, request.url.path, response.status_code,
+             int((_time.monotonic() - t0) * 1000)))
     return response
 
 
@@ -519,7 +533,6 @@ FILES = {
     "aikey": "ai_key.txt",   # ключ ИИ: запись по токену, чтение запрещено
 }
 
-import time as _time
 STATS = {"puts": 0, "gets": 0, "start": _time.time()}
 
 HIST_PATH = os.path.join(DATA, "stats_history.json")
@@ -691,7 +704,12 @@ def keys_status(x_token: Optional[str] = Header(None)):
 async def keys_put(request: Request, x_token: Optional[str] = Header(None)):
     """Сохранение/удаление ключей Groq и GitHub (нужен X-Token)."""
     _check_token(x_token)
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="bad json")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="json object required")
     k = _load_keys()
     for src in ("groq_api_key", "github_token"):
         if src in body:
@@ -753,7 +771,12 @@ async def change_token(request: Request, x_token: Optional[str] = Header(None)):
     """Смена пароля мастерской. Действует мгновенно, переживает перезапуск
     (хранится в data/sync_token.txt, права 600)."""
     _check_token(x_token)
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="bad json")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="json object required")
     new = str(body.get("token", "")).strip()
     if len(new) < 6:
         return {"ok": False, "error": "пароль минимум 6 символов"}
@@ -1012,6 +1035,39 @@ def _relay(path: str, body: bytes):
         raise HTTPException(status_code=ex.code, detail=ex.read().decode("utf-8", "replace")[:500])
     except Exception as ex:
         raise HTTPException(status_code=502, detail=str(ex))
+
+
+def _relay_get(path: str):
+    """GET к OpenAI-совместимому upstream с теми же credentials."""
+    upstream, key = _relay_target()
+    if not upstream:
+        raise HTTPException(
+            status_code=503,
+            detail="no AI backend: set AI_API_KEY or "
+                   "LLAMAFILE_URL / LOCAL_UPSTREAM")
+    headers = {"Accept": "application/json"}
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    req = urllib.request.Request(
+        upstream.rstrip("/") + "/" + path, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return JSONResponse(json.loads(
+                r.read().decode("utf-8", "replace")))
+    except urllib.error.HTTPError as ex:
+        raise HTTPException(
+            status_code=ex.code,
+            detail=ex.read().decode("utf-8", "replace")[:500])
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=str(ex)[:500])
+
+
+@app.get("/v1/models")
+async def relay_models(x_token: Optional[str] = Header(None),
+                       authorization: Optional[str] = Header(None)):
+    """OpenAI-compatible model discovery for clients and health checks."""
+    _check_token(x_token or _bearer(authorization))
+    return await run_in_threadpool(_relay_get, "models")
 
 
 @app.post("/v1/chat/completions")
@@ -1462,7 +1518,7 @@ async function load(){
 function escapeHtml(t){ return String(t).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 const chatHist = [];
 document.getElementById('chat-token').value = localStorage.getItem('srv_tok') || '';
-document.getElementById('chat-model').value = localStorage.getItem('srv_mdl') || 'qwen3:0.6b';
+document.getElementById('chat-model').value = localStorage.getItem('srv_mdl') || 'openai/gpt-oss-120b';
 document.getElementById('chat-in').addEventListener('keydown', e => { if(e.key === 'Enter') chatSend(); });
 
 function chatAdd(cls, text){
@@ -1480,7 +1536,7 @@ async function chatSend(){
   const text = inp.value.trim();
   if(!text) return;
   const token = document.getElementById('chat-token').value.trim();
-  const model = document.getElementById('chat-model').value.trim() || 'qwen2.5:0.5b';
+  const model = document.getElementById('chat-model').value.trim() || 'openai/gpt-oss-120b';
   localStorage.setItem('srv_tok', token);
   localStorage.setItem('srv_mdl', model);
   chatAdd('user', text);
@@ -1591,7 +1647,10 @@ def api_events(x_token: Optional[str] = Header(None)):
     idle_s = None
     if AI_ACT["last_ts"]:
         idle_s = int(_time.time() - AI_ACT["last_ts"])
-    return {"events": EVENTS[-250:], "n": len(EVENTS),
+    with EVENT_LOCK:
+        events = list(EVENTS[-250:])
+        event_seq = EVENT_SEQ
+    return {"events": events, "n": len(events),
             "idle_s": idle_s, "ready": _local_ready["ready"],
             "now": _time.strftime("%H:%M:%S"),
             "model": OLLAMA_MODEL or (LLAMAFILE_URL and "llamafile") or "Groq/облако",
@@ -1600,7 +1659,9 @@ def api_events(x_token: Optional[str] = Header(None)):
             "ai_det": AI_DET[-60:],
             "last_think": ({"t": AI_DET[-1]["t"],
                             "think": AI_DET[-1].get("think", "")[:300]}
-                           if AI_DET else None)}
+                           if AI_DET else None),
+            "seq": event_seq,
+            "first_seq": events[0]["id"] if events else event_seq}
 
 
 LOG_PAGE = """<!DOCTYPE html>
@@ -1625,6 +1686,7 @@ a{color:#58a6ff;text-decoration:none;margin-left:auto}
 </style></head><body>
 <header><span class="dot"></span><b>Живой лог сервера</b>
 <input id="token" type="password" placeholder="X-Token" autocomplete="off" style="margin-left:12px;max-width:190px">
+<span id="auth-state" class="t"></span>
 <button id="pause" onclick="togglePause()">⏸ пауза</button>
 <button onclick="document.getElementById('log').innerHTML=''">🧹 очистить</button>
 <button id="sec" onclick="toggleSec()">⏱ каждую секунду: ВЫКЛ</button>
@@ -1633,12 +1695,23 @@ a{color:#58a6ff;text-decoration:none;margin-left:auto}
 <a href="/">← дашборд</a></header>
 <div id="log"></div>
 <script>
-let n = 0, paused = false;
+ let lastSeq = 0, paused = false;
+ function authError(text){
+   const el = document.getElementById('auth-state');
+   el.textContent = text || '';
+   el.style.color = text ? '#ff7b72' : '#8b949e';
+ }
+ function rememberToken(){
+   localStorage.setItem('srv_tok', document.getElementById('token').value.trim());
+ }
+ function responseError(r, d){
+   return (d && (d.detail || d.error)) || ('HTTP ' + r.status);
+ }
 function authHeaders(){
   const tk = document.getElementById('token').value.trim();
   return tk ? {'X-Token': tk} : {};
 }
-function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+ function esc(s){return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function cls(line){
   if(line.indexOf(' -> 5') > -1 || line.indexOf(' -> 4') > -1) return 'err';
   if(line.startsWith('AI <<<')) return 'ai';
@@ -1650,22 +1723,23 @@ async function tick(){
   if(paused) return;
   try{
     const r = await fetch('/api/events', {headers: authHeaders()}); const d = await r.json();
+     if(!r.ok){ authError('⛔ ' + responseError(r, d) + ' — введите X-Token'); return; }
+     authError('● подключено');
     const evs = d.events || [];
-    const start = Math.max(0, evs.length - (d.n - n));
-    for(let i = start; i < evs.length; i++){
-      const e = evs[i];
+     for(const e of evs){
+       if(Number(e.id || 0) <= lastSeq) continue;
       const div = document.createElement('div');
       div.innerHTML = '<span class="t">'+e.t+'</span> <span class="'+cls(e.m)+'">'+esc(e.m)+'</span>';
       document.getElementById('log').appendChild(div);
+       lastSeq = Math.max(lastSeq, Number(e.id || 0));
     }
-    n = d.n;
     window.scrollTo(0, document.body.scrollHeight);
     if(detOn && d.ai_det){ renderDet(d.ai_det); if(d.ai_det.length < aiSeen) aiSeen = 0; }
     const el = document.getElementById('idle');
     if(d.idle_s == null){ el.textContent = '💤 обращений к ИИ не было'; }
     else if(d.idle_s < 60){ el.textContent = '⚡ активен (запрос ' + d.idle_s + ' с назад)'; }
     else { el.textContent = '💤 простой ' + Math.floor(d.idle_s/60) + ' мин'; }
-  }catch(e){}
+   }catch(e){ authError('⛔ сеть: ' + e.message); }
 }
 function togglePause(){ paused = !paused; document.getElementById('pause').textContent = paused ? '▶ продолжить' : '⏸ пауза'; }
 
@@ -1673,6 +1747,8 @@ let secOn = false, secTimer = null, lastSec = '';
 async function secTick(){
   try{
     const r = await fetch('/api/events', {headers: authHeaders()}); const d = await r.json();
+     if(!r.ok){ authError('⛔ ' + responseError(r, d) + ' — введите X-Token'); return; }
+     authError('● подключено');
     let state;
     if(d.ai_now > 0) state = '⚡ ОТВЕЧАЕТ (одновременно: ' + d.ai_now + ')';
     else if(d.idle_s == null) state = '💤 обращений ещё не было';
@@ -1693,10 +1769,12 @@ async function secTick(){
       + (tail ? '<div class="think" style="margin-left:70px">' + esc(tail.trim()) + '</div>' : '');
     document.getElementById('log').appendChild(div);
     if(!paused) window.scrollTo(0, document.body.scrollHeight);
-  }catch(e){}
+   }catch(e){ authError('⛔ сеть: ' + e.message); }
 }
 let detOn = true, aiSeen = 0;
-document.getElementById('det').textContent = '🔬 супер-лог ИИ: ВКЛ';
+ document.getElementById('token').value = localStorage.getItem('srv_tok') || '';
+ document.getElementById('token').addEventListener('input', rememberToken);
+ document.getElementById('det').textContent = '🔬 супер-лог ИИ: ВКЛ';
 function renderDet(entries){
   const log = document.getElementById('log');
   for(let i = aiSeen; i < entries.length; i++){

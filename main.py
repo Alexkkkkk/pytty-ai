@@ -1198,16 +1198,18 @@ DASH_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TerminalAI — дашборд мастерской</title>
 <style>
-body{margin:0;background:#0d1117;color:#d7dae0;font-family:'Segoe UI',Arial,sans-serif}
-header{padding:18px 26px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:14px}
-h1{font-size:19px;margin:0;color:#7ee787}
+ *{box-sizing:border-box}
+ html,body{min-height:100%;overflow-x:hidden}
+ body{margin:0;background:#0d1117;color:#d7dae0;font-family:'Segoe UI',Arial,sans-serif}
+ header{padding:18px 26px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+ h1{font-size:19px;margin:0;color:#7ee787;min-width:0}
 .dot{width:9px;height:9px;border-radius:50%;background:#3fb950;display:inline-block}
 .wrap{padding:22px 26px;max-width:1100px;margin:0 auto}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:22px}
+ .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:14px;margin-bottom:22px}
 .card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px 16px}
 .card .v{font-size:26px;font-weight:700;color:#7ee787}
 .card .l{font-size:12px;color:#8b949e;margin-top:4px}
-table{width:100%;border-collapse:collapse;background:#161b22;border:1px solid #30363d;border-radius:10px;overflow:hidden;margin-bottom:22px}
+ table{width:100%;border-collapse:collapse;background:#161b22;border:1px solid #30363d;border-radius:10px;overflow:hidden;margin-bottom:22px}
 th{background:#1c2128;text-align:left;padding:9px 12px;font-size:12px;color:#9fd0ff;text-transform:uppercase}
 td{padding:8px 12px;border-top:1px solid #21262d;font-size:13px;vertical-align:top}
 tr:hover td{background:#1c2128}
@@ -1233,15 +1235,40 @@ a{color:#58a6ff}
 .msg.user{background:#1f6feb;color:#fff;margin-left:auto}
 .msg.bot{background:#21262d;border:1px solid #30363d}
 .msg.err{background:#3d1d1d;color:#ff7b72;border:1px solid #f85149}
-.chat-row{display:flex;gap:8px}
-.chat-row input{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#d7dae0;padding:9px 12px;font-size:13px}
+ .chat-row{display:flex;gap:8px;min-width:0;flex-wrap:wrap}
+ .chat-row input{flex:1 1 180px;min-width:0;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#d7dae0;padding:9px 12px;font-size:13px}
 .chat-row button{background:#238636;color:#fff;border:none;border-radius:8px;padding:9px 18px;cursor:pointer;font-size:13px}
 .chat-row button:disabled{opacity:.5}
 .chat-cfg{display:flex;gap:8px;margin-bottom:10px}
-.chat-cfg input{width:180px;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#8b949e;padding:6px 10px;font-size:12px}
+ .chat-cfg{flex-wrap:wrap}
+ .chat-cfg input{width:180px;max-width:100%;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#8b949e;padding:6px 10px;font-size:12px}
+ code{overflow-wrap:anywhere}
+ @media (max-width:700px){
+   body{font-size:13px}
+   header{padding:12px 14px;gap:8px}
+   header h1{font-size:16px;line-height:1.25;flex:1}
+   header .small{width:100%;margin-left:23px!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+   #ai-status{padding:10px 14px;display:flex;flex-wrap:wrap;gap:7px}
+   #ai-status .bar{order:3;flex:1 0 100%;max-width:none;height:9px}
+   .wrap{padding:14px 12px}
+   .cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-bottom:18px}
+   .card{padding:11px 12px}
+   .card .v{font-size:22px}
+   .card[style*="grid-column"]{grid-column:1/-1!important}
+   h3{font-size:16px;margin-top:20px}
+   table{display:block;overflow-x:auto;white-space:nowrap}
+   th,td{padding:8px 10px}
+   .chat{padding:11px;margin-bottom:18px}
+   .chat-row input{flex:1 1 100%!important;width:100%!important}
+   .chat-row button{flex:1 1 auto;min-height:36px;padding:8px 10px}
+   .chat-row .badge{align-self:center}
+   .msg{max-width:94%}
+   .bars{gap:3px;height:105px;padding:9px 5px}
+   .bar .d,.bar .n{font-size:9px}
+ }
 </style></head><body>
-<header><span class="dot"></span><h1>TerminalAI — сервер мастерской</h1>
-<span class="small" id="uptime"></span><span class="small" id="lmodel" style="margin-left:auto"></span></header>
+ <header><span class="dot"></span><h1>TerminalAI — сервер мастерской</h1>
+ <span class="small" id="uptime"></span><span class="small head-model" id="lmodel" style="margin-left:auto"></span></header>
 <div id="ai-status"><span id="ai-stage">ИИ: проверка…</span><span class="bar"><i id="ai-pct" style="width:0%"></i></span><span id="ai-num"></span></div>
 <div class="wrap">
 <div class="cards">

@@ -1669,12 +1669,19 @@ LOG_PAGE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TerminalAI — живой лог</title>
 <style>
-body{margin:0;background:#0d1117;color:#7ee787;font-family:Consolas,monospace;font-size:13px}
-header{padding:12px 20px;background:#161b22;border-bottom:1px solid #30363d;display:flex;gap:12px;align-items:center;position:sticky;top:0}
-header b{color:#d7dae0;font-family:'Segoe UI',Arial}
-button{background:#21262d;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:5px 12px;cursor:pointer}
-a{color:#58a6ff;text-decoration:none;margin-left:auto}
-#log{padding:14px 20px;white-space:pre-wrap;line-height:1.55}
+ *{box-sizing:border-box}
+ html,body{min-height:100%;overflow-x:hidden}
+ body{margin:0;background:#0d1117;color:#7ee787;font-family:Consolas,monospace;font-size:13px}
+ header{padding:10px 20px;background:#161b22;border-bottom:1px solid #30363d;display:flex;gap:10px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+ .brand{display:flex;align-items:center;gap:9px;min-width:0;flex:0 1 auto}
+ header b{color:#d7dae0;font-family:'Segoe UI',Arial;white-space:nowrap}
+ .toolbar{display:flex;align-items:center;gap:7px;flex:1 1 620px;min-width:0;flex-wrap:wrap}
+ .token-label{color:#8b949e;font-family:'Segoe UI',Arial;font-size:12px}
+ #token{width:190px;min-width:120px;max-width:100%;height:30px;padding:4px 8px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9}
+ button{background:#21262d;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:6px 10px;min-height:30px;cursor:pointer;white-space:nowrap}
+ button:hover{background:#30363d}
+ a{color:#58a6ff;text-decoration:none;margin-left:auto;white-space:nowrap}
+ #log{padding:14px 20px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.55}
 .t{color:#8b949e}.post{color:#79c0ff}.get{color:#7ee787}.err{color:#ff7b72}.ai{color:#bc8cff}
 .dot{width:8px;height:8px;border-radius:50%;background:#3fb950;display:inline-block;animation:bl 1.4s infinite}
 .det{border-left:2px solid #bc8cff;margin:4px 0 10px 6px;padding:4px 10px}
@@ -1683,16 +1690,33 @@ a{color:#58a6ff;text-decoration:none;margin-left:auto}
 .det .m{color:#8b949e;font-size:11px;margin-top:4px}
 .det .think{color:#e3b341;font-style:italic;white-space:pre-wrap;margin-top:4px;border-left:2px solid #e3b341;padding-left:8px}
 @keyframes bl{50%{opacity:.3}}
+ @media (max-width:700px){
+   body{font-size:12px}
+   header{padding:9px 10px;gap:8px}
+   .brand{width:100%;justify-content:space-between}
+   .toolbar{flex-basis:100%;display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px}
+   .token-label{align-self:center}
+   #token{width:100%;min-width:0}
+   #auth-state{grid-column:1/-1;min-height:17px}
+   .toolbar button{width:100%;min-height:34px;white-space:normal;line-height:1.2}
+   .toolbar a{grid-column:1/-1;margin:1px 0 0;padding:4px 0}
+   #log{padding:10px 9px;line-height:1.45}
+   .det{margin-left:2px;padding-left:8px}
+ }
 </style></head><body>
-<header><span class="dot"></span><b>Живой лог сервера</b>
-<input id="token" type="password" placeholder="X-Token" autocomplete="off" style="margin-left:12px;max-width:190px">
-<span id="auth-state" class="t"></span>
-<button id="pause" onclick="togglePause()">⏸ пауза</button>
-<button onclick="document.getElementById('log').innerHTML=''">🧹 очистить</button>
-<button id="sec" onclick="toggleSec()">⏱ каждую секунду: ВЫКЛ</button>
-<button id="det" onclick="toggleDet()">🔬 супер-лог ИИ: ВЫКЛ</button>
-<span id="idle" class="t"></span>
-<a href="/">← дашборд</a></header>
+ <header>
+  <div class="brand"><span><span class="dot"></span> <b>Живой лог сервера</b></span><span id="idle" class="t"></span></div>
+  <div class="toolbar">
+   <label class="token-label" for="token">X-Token</label>
+   <input id="token" type="password" placeholder="введите токен" autocomplete="off">
+   <span id="auth-state" class="t"></span>
+   <button id="pause" onclick="togglePause()">⏸ пауза</button>
+   <button onclick="document.getElementById('log').innerHTML=''">🧹 очистить</button>
+   <button id="sec" onclick="toggleSec()">⏱ каждую секунду: ВЫКЛ</button>
+   <button id="det" onclick="toggleDet()">🔬 супер-лог ИИ: ВЫКЛ</button>
+   <a href="/">← дашборд</a>
+  </div>
+ </header>
 <div id="log"></div>
 <script>
  let lastSeq = 0, paused = false;
